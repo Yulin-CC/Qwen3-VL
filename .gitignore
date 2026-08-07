@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Train / weights
+weights/
+runs/
+*.pt
+*.safetensors
+
+# Logs & local drafts
+*.log
+.draft/
+*.draft/
+
+# Annotation tool portable build artifacts
+1-annotation-tool/yoloe/build/runtime/
+1-annotation-tool/yoloe/build/0-dist/
+1-annotation-tool/yoloe/build/cache/
+1-annotation-tool/yoloe/runtime/
+1-annotation-tool/yoloe/dist/
+
+# Nested repo metadata (yoloe 单独维护 GitLab 时本地保留)
+1-annotation-tool/yoloe/.git/
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/

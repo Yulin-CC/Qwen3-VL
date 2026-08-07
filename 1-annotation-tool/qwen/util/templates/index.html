@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>图像标注平台</title>
+<style>
+/* ── Reset ── */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+     background:#0f1117;color:#e2e8f0;height:100vh;display:flex;
+     flex-direction:column;overflow:hidden}
+
+/* ── Top Bar ── */
+#topbar{display:flex;align-items:center;gap:10px;padding:7px 14px;
+        background:#1a1d27;border-bottom:1px solid #2d3148;flex-shrink:0;flex-wrap:wrap}
+#topbar h1{font-size:15px;font-weight:700;color:#7c86f5;white-space:nowrap;
+           display:flex;align-items:center;gap:7px}
+.sep{color:#2d3148;font-size:18px}
+#dir-display{display:flex;gap:8px;flex:1;min-width:0;overflow:hidden}
+.dir-chip{display:flex;align-items:center;gap:6px;background:#20243a;
+          border:1px solid #2d3148;border-radius:20px;padding:3px 10px 3px 8px;
+          font-size:12px;color:#94a3b8;min-width:0;max-width:320px;cursor:pointer;
+          transition:border-color .15s}
+.dir-chip:hover{border-color:#7c86f5;color:#e2e8f0}
+.dir-chip .chip-icon{font-size:13px;flex-shrink:0}
+.dir-chip .chip-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dir-chip .chip-label{font-size:10px;color:#4a5568;flex-shrink:0;text-transform:uppercase;
+                       letter-spacing:.04em;margin-right:2px}
+.btn{padding:5px 13px;border:none;border-radius:6px;font-size:12px;cursor:pointer;
+     font-weight:500;transition:opacity .15s,transform .1s;white-space:nowrap}
+.btn:hover{opacity:.85}.btn:active{transform:scale(.97)}
+.btn-primary{background:#7c86f5;color:#fff}
+.btn-success{background:#22c55e;color:#fff}
+.btn-danger{background:#ef4444;color:#fff}
+.btn-outline{background:transparent;border:1px solid #3d4166;color:#94a3b8}
+.btn-outline:hover{border-color:#7c86f5;color:#7c86f5}
+.btn-sm{padding:3px 10px;font-size:11px}
+
+/* ── Stats bar ── */
+#statsbar{display:flex;align-items:center;gap:14px;padding:4px 14px;
+          background:#13162080;border-bottom:1px solid #2d3148;
+          font-size:12px;color:#94a3b8;flex-shrink:0}
+#progress-bar-wrap{flex:1;height:4px;background:#2d3148;border-radius:2px;
+                   overflow:hidden;min-width:80px}
+#progress-bar{height:100%;background:#7c86f5;border-radius:2px;transition:width .4s}
+
+/* ── Main ── */
+#main{display:flex;flex:1;overflow:hidden}
+
+/* ── Sidebar ── */
+#sidebar{width:210px;flex-shrink:0;background:#1a1d27;border-right:1px solid #2d3148;
+         display:flex;flex-direction:column;overflow:hidden}
+#sidebar-header{padding:8px 10px 6px;font-size:11px;color:#64748b;
+                text-transform:uppercase;letter-spacing:.05em;
+                border-bottom:1px solid #2d3148;display:flex;
+                align-items:center;justify-content:space-between}
+#filter-btns{display:flex;gap:3px}
+.filter-btn{padding:2px 7px;border-radius:4px;font-size:10px;cursor:pointer;
+            border:1px solid #2d3148;background:transparent;color:#94a3b8;transition:all .15s}
+.filter-btn.active{background:#7c86f5;border-color:#7c86f5;color:#fff}
+#image-list{flex:1;overflow-y:auto;padding:3px 0}
+#image-list::-webkit-scrollbar{width:3px}
+#image-list::-webkit-scrollbar-thumb{background:#2d3148;border-radius:2px}
+.img-item{display:flex;align-items:center;padding:6px 10px;cursor:pointer;gap:7px;
+          border-left:3px solid transparent;transition:background .1s;color:#cbd5e1}
+.img-item:hover{background:#20243a}
+.img-item.active{background:#20243a;border-left-color:#7c86f5;color:#fff}
+.img-item.annotated .dot{background:#22c55e}
+.img-item .dot{width:6px;height:6px;border-radius:50%;background:#3d4166;flex-shrink:0}
+.img-item .iname{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
+.img-item .badge{font-size:10px;background:#2d3148;border-radius:10px;padding:1px 5px;color:#64748b}
+.img-item.annotated .badge{background:#14532d;color:#4ade80}
+
+/* ── Viewer ── */
+#viewer{flex:1;display:flex;flex-direction:column;overflow:hidden;background:#0a0c14}
+#viewer-nav{display:flex;align-items:center;justify-content:space-between;
+            padding:7px 12px;background:#1a1d2780;border-bottom:1px solid #2d3148;
+            font-size:12px;color:#94a3b8;flex-shrink:0}
+#viewer-nav .nav-btns{display:flex;gap:5px}
+#img-wrap{flex:1;overflow:auto;display:flex;align-items:center;
+          justify-content:center;padding:16px}
+#img-wrap::-webkit-scrollbar{width:4px;height:4px}
+#img-wrap::-webkit-scrollbar-thumb{background:#2d3148}
+#current-img{max-width:100%;max-height:100%;border-radius:8px;
+             box-shadow:0 4px 32px #00000080;object-fit:contain;display:none}
+#placeholder{text-align:center;color:#3d4166;user-select:none}
+#placeholder .ph-icon{font-size:56px;margin-bottom:12px;opacity:.35}
+#placeholder p{font-size:13px;line-height:1.8}
+#placeholder .ph-hint{font-size:11px;margin-top:8px;color:#2d3148}
+
+/* ── Annotation Panel ── */
+#annotation-panel{width:370px;flex-shrink:0;background:#1a1d27;
+                  border-left:1px solid #2d3148;display:flex;
+                  flex-direction:column;overflow:hidden}
+#ann-header{padding:9px 12px;border-bottom:1px solid #2d3148;display:flex;
+            align-items:center;justify-content:space-between;flex-shrink:0}
+#ann-header h3{font-size:13px;font-weight:600;color:#e2e8f0}
+#ann-header .ann-actions{display:flex;gap:5px}
+#qa-list{flex:1;overflow-y:auto;padding:8px;display:flex;flex-direction:column;gap:8px}
+#qa-list::-webkit-scrollbar{width:3px}
+#qa-list::-webkit-scrollbar-thumb{background:#2d3148;border-radius:2px}
+.qa-empty{color:#3d4166;font-size:12px;text-align:center;margin-top:32px}
+.qa-card{background:#0f1117;border:1px solid #2d3148;border-radius:8px;overflow:hidden;
+         transition:border-color .15s}
+.qa-card:hover{border-color:#3d4166}
+.qa-card-header{display:flex;align-items:center;justify-content:space-between;
+                padding:6px 10px;background:#13162080;border-bottom:1px solid #2d3148;
+                font-size:11px;color:#64748b}
+.qa-card-header .qa-idx{font-weight:600;color:#7c86f5}
+.qa-del{background:none;border:none;color:#ef4444;cursor:pointer;font-size:15px;
+        line-height:1;opacity:.5}.qa-del:hover{opacity:1}
+.qa-body{padding:7px 9px;display:flex;flex-direction:column;gap:5px}
+.qa-field label{font-size:10px;color:#64748b;display:block;margin-bottom:2px;
+                text-transform:uppercase;letter-spacing:.04em}
+.qa-field textarea{width:100%;background:#1a1d27;border:1px solid #2d3148;
+                   border-radius:5px;padding:6px 8px;color:#e2e8f0;font-size:12px;
+                   resize:vertical;min-height:50px;outline:none;font-family:inherit;
+                   line-height:1.5;transition:border-color .15s}
+.qa-field textarea:focus{border-color:#7c86f5}
+#add-qa-wrap{padding:8px;border-top:1px solid #2d3148;display:flex;gap:5px;flex-shrink:0}
+#add-qa-wrap .btn{flex:1}
+#kbd-hint{padding:5px 12px;border-top:1px solid #1a1d27;font-size:10px;
+          color:#2d3148;display:flex;gap:12px;flex-shrink:0}
+kbd{display:inline-block;padding:1px 4px;background:#20243a;border-radius:3px;
+    border:1px solid #2d3148;font-size:9px;font-family:monospace;color:#64748b}
+
+/* ═══════════════════════════════════════════
+   SETUP MODAL  (labelImg-style)
+═══════════════════════════════════════════ */
+#modal-overlay{position:fixed;inset:0;background:#00000090;z-index:100;
+               display:flex;align-items:center;justify-content:center;
+               backdrop-filter:blur(4px)}
+#setup-modal{background:#1a1d27;border:1px solid #2d3148;border-radius:12px;
+             width:600px;max-width:95vw;max-height:90vh;display:flex;
+             flex-direction:column;overflow:hidden;
+             box-shadow:0 24px 80px #00000080}
+#modal-header{padding:16px 20px;border-bottom:1px solid #2d3148;
+              display:flex;align-items:center;justify-content:space-between}
+#modal-header h2{font-size:15px;font-weight:700;color:#e2e8f0;
+                 display:flex;align-items:center;gap:8px}
+#modal-body{flex:1;overflow:hidden;display:flex;flex-direction:column;padding:16px;gap:12px}
+
+/* path row */
+.path-row{display:flex;flex-direction:column;gap:5px}
+.path-row label{font-size:11px;color:#94a3b8;text-transform:uppercase;
+                letter-spacing:.05em;display:flex;align-items:center;gap:6px}
+.path-row label span{font-size:16px}
+.path-input-wrap{display:flex;gap:6px}
+.path-input-wrap input{flex:1;background:#0f1117;border:1px solid #2d3148;
+                        border-radius:6px;padding:7px 10px;color:#e2e8f0;
+                        font-size:13px;outline:none;transition:border-color .15s;
+                        font-family:monospace}
+.path-input-wrap input:focus{border-color:#7c86f5}
+.path-input-wrap input.ok{border-color:#22c55e}
+.path-input-wrap input.err{border-color:#ef4444}
+.path-input-wrap .btn-browse{flex-shrink:0}
+
+/* file browser */
+.browser-panel{background:#0f1117;border:1px solid #2d3148;border-radius:8px;
+               overflow:hidden;display:none;flex-direction:column;max-height:220px}
+.browser-panel.open{display:flex}
+.browser-topbar{display:flex;align-items:center;gap:6px;padding:6px 10px;
+                border-bottom:1px solid #2d3148;flex-shrink:0}
+.browser-topbar .b-path{flex:1;font-size:11px;color:#94a3b8;font-family:monospace;
+                         overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.browser-list{flex:1;overflow-y:auto;padding:4px 0}
+.browser-list::-webkit-scrollbar{width:3px}
+.browser-list::-webkit-scrollbar-thumb{background:#2d3148}
+.b-entry{display:flex;align-items:center;gap:7px;padding:5px 10px;
+         cursor:pointer;font-size:12px;color:#94a3b8;transition:background .1s}
+.b-entry:hover{background:#20243a;color:#e2e8f0}
+.b-entry .b-icon{font-size:14px;flex-shrink:0}
+.b-entry.b-dir .b-icon{color:#f0c040}
+.b-entry.b-up .b-icon{color:#64748b}
+.b-select-btn{margin-left:auto;flex-shrink:0;padding:2px 8px;
+              border-radius:4px;font-size:10px;cursor:pointer;
+              border:1px solid #3d4166;background:transparent;color:#7c86f5;
+              white-space:nowrap}
+.b-select-btn:hover{background:#7c86f520}
+
+#modal-divider{height:1px;background:#2d3148;flex-shrink:0}
+#modal-footer{padding:12px 16px;display:flex;align-items:center;
+              justify-content:space-between;flex-shrink:0}
+#modal-footer .hint{font-size:11px;color:#3d4166}
+#modal-footer .footer-btns{display:flex;gap:8px}
+#modal-error{font-size:12px;color:#ef4444;min-height:16px}
+
+/* ── Toast ── */
+#toast{position:fixed;bottom:20px;right:20px;background:#22c55e;color:#fff;
+       padding:9px 18px;border-radius:8px;font-size:13px;font-weight:500;
+       box-shadow:0 4px 20px #00000060;transform:translateY(70px);opacity:0;
+       transition:all .25s;z-index:999;pointer-events:none}
+#toast.show{transform:translateY(0);opacity:1}
+#toast.error{background:#ef4444}
+</style>
+</head>
+<body>
+
+<!-- ══ Top Bar ══ -->
+<div id="topbar">
+  <h1>🖼 图像标注平台</h1>
+  <span class="sep">|</span>
+  <div id="dir-display">
+    <div class="dir-chip" onclick="openSetup()" title="点击修改目录">
+      <span class="chip-icon">📂</span>
+      <span class="chip-label">图像</span>
+      <span class="chip-text" id="chip-img">— 未配置 —</span>
+    </div>
+    <div class="dir-chip" onclick="openSetup()" title="点击修改目录">
+      <span class="chip-icon">💾</span>
+      <span class="chip-label">标注</span>
+      <span class="chip-text" id="chip-ann">— 未配置 —</span>
+    </div>
+  </div>
+  <button class="btn btn-outline btn-sm" onclick="openSetup()">⚙ 目录设置</button>
+  <button class="btn btn-success btn-sm" onclick="exportJsonl()">导出 JSONL</button>
+</div>
+
+<!-- ══ Stats Bar ══ -->
+<div id="statsbar">
+  <span id="stat-text">尚未加载</span>
+  <div id="progress-bar-wrap"><div id="progress-bar" style="width:0%"></div></div>
+  <span id="stat-pct">0%</span>
+</div>
+
+<!-- ══ Main ══ -->
+<div id="main">
+
+  <!-- Sidebar -->
+  <div id="sidebar">
+    <div id="sidebar-header">
+      <span>图像列表</span>
+      <div id="filter-btns">
+        <button class="filter-btn active" onclick="setFilter('all',this)">全部</button>
+        <button class="filter-btn" onclick="setFilter('done',this)">已标</button>
+        <button class="filter-btn" onclick="setFilter('todo',this)">待标</button>
+      </div>
+    </div>
+    <div id="image-list"></div>
+  </div>
+
+  <!-- Viewer -->
+  <div id="viewer">
+    <div id="viewer-nav">
+      <span id="current-name">—</span>
+      <div class="nav-btns">
+        <button class="btn btn-outline btn-sm" onclick="navigate(-1)">← 上一张</button>
+        <button class="btn btn-outline btn-sm" onclick="navigate(1)">下一张 →</button>
+      </div>
+    </div>
+    <div id="img-wrap">
+      <div id="placeholder">
+        <div class="ph-icon">🖼</div>
+        <p>请先配置「图像目录」与「标注目录」</p>
+        <p class="ph-hint">点击顶栏「⚙ 目录设置」开始</p>
+      </div>
+      <img id="current-img" alt="current">
+    </div>
+  </div>
+
+  <!-- Annotation Panel -->
+  <div id="annotation-panel">
+    <div id="ann-header">
+      <h3>标注编辑</h3>
+      <div class="ann-actions">
+        <button class="btn btn-danger btn-outline btn-sm" onclick="clearAnnotation()">清除</button>
+        <button class="btn btn-success btn-sm" onclick="saveAnnotation()">保存 ✓</button>
+      </div>
+    </div>
+    <div id="qa-list">
+      <div class="qa-empty">选择一张图像开始标注</div>
+    </div>
+    <div id="add-qa-wrap">
+      <button class="btn btn-outline" onclick="addQA()">＋ 添加 QA 对</button>
+      <button class="btn btn-primary" onclick="saveAnnotation()">保存</button>
+    </div>
+    <div id="kbd-hint">
+      <span><kbd>Ctrl+S</kbd> 保存</span>
+      <span><kbd>←</kbd><kbd>→</kbd> 切换</span>
+      <span><kbd>N</kbd> 添加QA</span>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════
+     SETUP MODAL
+═══════════════════════════════════════════ -->
+<div id="modal-overlay">
+  <div id="setup-modal">
+    <div id="modal-header">
+      <h2>🗂 配置工作目录</h2>
+      <button class="btn btn-outline btn-sm" id="modal-close-btn"
+              onclick="closeSetup()" style="display:none">✕ 关闭</button>
+    </div>
+
+    <div id="modal-body">
+      <!-- 图像目录 -->
+      <div class="path-row">
+        <label><span>📂</span> 图像目录（images folder）</label>
+        <div class="path-input-wrap">
+          <input id="inp-images" type="text" placeholder="/path/to/images"
+                 oninput="onPathInput('images')" onkeydown="onPathKeydown(event,'images')">
+          <button class="btn btn-outline btn-sm btn-browse"
+                  onclick="toggleBrowser('images')">浏览</button>
+        </div>
+        <div class="browser-panel" id="browser-images">
+          <div class="browser-topbar">
+            <button class="btn btn-outline btn-sm" onclick="browserUp('images')">↑ 上级</button>
+            <span class="b-path" id="b-path-images">/</span>
+          </div>
+          <div class="browser-list" id="b-list-images"></div>
+        </div>
+      </div>
+
+      <!-- 标注目录 -->
+      <div class="path-row">
+        <label><span>💾</span> 标注保存目录（annotations folder）</label>
+        <div class="path-input-wrap">
+          <input id="inp-annotations" type="text" placeholder="/path/to/annotations"
+                 oninput="onPathInput('annotations')" onkeydown="onPathKeydown(event,'annotations')">
+          <button class="btn btn-outline btn-sm btn-browse"
+                  onclick="toggleBrowser('annotations')">浏览</button>
+        </div>
+        <div class="browser-panel" id="browser-annotations">
+          <div class="browser-topbar">
+            <button class="btn btn-outline btn-sm" onclick="browserUp('annotations')">↑ 上级</button>
+            <span class="b-path" id="b-path-annotations">/</span>
+          </div>
+          <div class="browser-list" id="b-list-annotations"></div>
+        </div>
+      </div>
+
+      <div id="modal-error"></div>
+    </div>
+
+    <div id="modal-divider"></div>
+    <div id="modal-footer">
+      <span class="hint">标注目录不存在时将自动创建</span>
+      <div class="footer-btns">
+        <button class="btn btn-primary" onclick="applyConfig()">确认并开始标注 →</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script>
+// ═══ State ═══
+let images = [], currentIdx = -1, filter = 'all', isDirty = false;
+let qaData = [];
+let browserPaths = { images: '', annotations: '' };
+
+// ═══ Init ═══
+(async () => {
+  const res = await fetch('/api/config');
+  const cfg = await res.json();
+  if (cfg.images_dir)      document.getElementById('inp-images').value      = cfg.images_dir;
+  if (cfg.annotations_dir) document.getElementById('inp-annotations').value = cfg.annotations_dir;
+  if (cfg.images_dir && cfg.annotations_dir) {
+    closeSetup();
+    await loadImageList();
+    updateChips(cfg);
+  } else {
+    // Pre-browse home directory
+    browserNav('images', '');
+    browserNav('annotations', '');
+  }
+})();
+
+// ═══ Setup Modal ═══
+function openSetup() {
+  document.getElementById('modal-overlay').style.display = 'flex';
+}
+
+function closeSetup() {
+  document.getElementById('modal-overlay').style.display = 'none';
+  document.getElementById('modal-close-btn').style.display = 'inline-flex';
+}
+
+async function applyConfig() {
+  const images_dir      = document.getElementById('inp-images').value.trim();
+  const annotations_dir = document.getElementById('inp-annotations').value.trim();
+  document.getElementById('modal-error').textContent = '';
+
+  if (!images_dir || !annotations_dir) {
+    setModalError('请填写两个目录路径'); return;
+  }
+  const res  = await fetch('/api/config', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({images_dir, annotations_dir})
+  });
+  const data = await res.json();
+  if (data.error) { setModalError(data.error); return; }
+
+  updateChips(data.config);
+  closeSetup();
+  await loadImageList();
+  showToast('目录已加载，开始标注吧！');
+}
+
+function setModalError(msg) {
+  document.getElementById('modal-error').textContent = '⚠ ' + msg;
+}
+
+function updateChips(cfg) {
+  document.getElementById('chip-img').textContent  = cfg.images_dir      || '— 未配置 —';
+  document.getElementById('chip-ann').textContent  = cfg.annotations_dir || '— 未配置 —';
+}
+
+// ═══ Directory Browser ═══
+async function browserNav(role, path) {
+  const queryPath = (!path || path === '') ? '~' : path;
+  const url  = '/api/browse?path=' + encodeURIComponent(queryPath);
+  const res  = await fetch(url);
+  const data = await res.json();
+  if (data.error) { showToast(data.error, true); return; }
+
+  browserPaths[role] = data.current;
+  const isDriveList = data.current === '__drives__';
+  document.getElementById('b-path-' + role).textContent =
+    isDriveList ? '我的电脑（选择驱动器）' : data.current;
+
+  const list = document.getElementById('b-list-' + role);
+  list.innerHTML = '';
+
+  // "↩ 上级目录" entry
+  if (data.parent !== null && data.parent !== undefined) {
+    const row = makeEntry('↩ 上级目录', 'b-up', '⬆',
+      () => browserNav(role, data.parent));
+    list.appendChild(row);
+  }
+
+  data.entries.forEach(e => {
+    const icon  = e.type === 'drive' ? '💿' : '📁';
+    const cls   = e.type === 'drive' ? 'b-drive' : 'b-dir';
+    const row   = makeEntry(e.name, cls, icon, () => browserNav(role, e.path));
+    // 盘符不能"选择"（要进入后才能选子目录），普通目录可以直接选择
+    if (e.type !== 'drive') {
+      const selBtn = document.createElement('button');
+      selBtn.className = 'b-select-btn';
+      selBtn.textContent = '选择';
+      selBtn.onclick = (ev) => { ev.stopPropagation(); selectDir(role, e.path); };
+      row.appendChild(selBtn);
+    }
+    list.appendChild(row);
+  });
+
+  // "✅ 选择当前目录" — 非盘符列表时显示
+  if (!isDriveList) {
+    const cur = document.createElement('div');
+    cur.className = 'b-entry';
+    cur.style.cssText = 'background:#20243a20;border-bottom:1px solid #2d3148';
+    cur.innerHTML = `<span class="b-icon">✅</span>
+      <span style="font-size:11px;color:#7c86f5;flex:1">选择当前目录</span>`;
+    cur.onclick = () => selectDir(role, data.current);
+    list.insertBefore(cur, list.firstChild);
+  }
+}
+
+function makeEntry(name, cls, icon, onClick) {
+  const div = document.createElement('div');
+  div.className = 'b-entry ' + cls;
+  div.innerHTML = `<span class="b-icon">${icon}</span><span>${escHtml(name)}</span>`;
+  div.onclick = onClick;
+  return div;
+}
+
+function selectDir(role, path) {
+  const inputId = role === 'images' ? 'inp-images' : 'inp-annotations';
+  document.getElementById(inputId).value = path;
+  document.getElementById(inputId).className = 'ok';
+  // close browser panel
+  document.getElementById('browser-' + role).classList.remove('open');
+  document.getElementById('modal-error').textContent = '';
+}
+
+async function toggleBrowser(role) {
+  const panel = document.getElementById('browser-' + role);
+  if (panel.classList.contains('open')) {
+    panel.classList.remove('open');
+  } else {
+    document.querySelectorAll('.browser-panel').forEach(p => p.classList.remove('open'));
+    panel.classList.add('open');
+    const inputId = role === 'images' ? 'inp-images' : 'inp-annotations';
+    const curPath = browserPaths[role] ||
+      document.getElementById(inputId).value.trim() ||
+      '';
+    await browserNav(role, curPath);
+  }
+}
+
+async function browserUp(role) {
+  // fetch current parent from last browse result
+  const url  = '/api/browse?path=' + encodeURIComponent(browserPaths[role] || '~');
+  const res  = await fetch(url);
+  const data = await res.json();
+  if (data.parent !== null && data.parent !== undefined) {
+    await browserNav(role, data.parent);
+  }
+}
+
+function onPathInput(role) {
+  const el = document.getElementById(role === 'images' ? 'inp-images' : 'inp-annotations');
+  el.className = '';
+}
+
+async function onPathKeydown(event, role) {
+  if (event.key === 'Enter') {
+    const val = event.target.value.trim();
+    if (val) await browserNav(role, val);
+  }
+}
+
+// ═══ Image List ═══
+async function loadImageList() {
+  const res = await fetch('/api/images');
+  images    = await res.json();
+  renderSidebar();
+  updateStats();
+  if (images.length > 0 && currentIdx === -1) selectImage(0);
+}
+
+function renderSidebar() {
+  const list    = document.getElementById('image-list');
+  list.innerHTML = '';
+  const visible = images.filter(img =>
+    filter === 'all' ? true : filter === 'done' ? img.annotated : !img.annotated
+  );
+  if (!visible.length) {
+    list.innerHTML = '<div style="padding:18px;text-align:center;color:#3d4166;font-size:12px;">无图像</div>';
+    return;
+  }
+  visible.forEach(img => {
+    const realIdx = images.indexOf(img);
+    const div = document.createElement('div');
+    div.className = 'img-item' + (img.annotated ? ' annotated' : '') + (realIdx === currentIdx ? ' active' : '');
+    div.innerHTML = `<span class="dot"></span>
+      <span class="iname" title="${escHtml(img.name)}">${escHtml(img.name)}</span>
+      <span class="badge">${img.qa_count || 0}</span>`;
+    div.onclick = () => selectImage(realIdx);
+    list.appendChild(div);
+  });
+}
+
+function updateStats() {
+  const total = images.length;
+  const done  = images.filter(i => i.annotated).length;
+  const pct   = total > 0 ? Math.round(done / total * 100) : 0;
+  document.getElementById('stat-text').textContent = `已标注 ${done} / ${total}`;
+  document.getElementById('stat-pct').textContent  = pct + '%';
+  document.getElementById('progress-bar').style.width = pct + '%';
+}
+
+function setFilter(f, btn) {
+  filter = f;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderSidebar();
+}
+
+// ═══ Select / Navigate ═══
+async function selectImage(idx) {
+  if (isDirty && !confirm('当前标注未保存，确定离开？')) return;
+  isDirty    = false;
+  currentIdx = idx;
+  const img  = images[idx];
+  document.getElementById('current-name').textContent = `${idx + 1} / ${images.length}  —  ${img.name}`;
+  document.getElementById('placeholder').style.display = 'none';
+  const el   = document.getElementById('current-img');
+  el.style.display = 'block';
+  el.src = `/api/image/${encodeURIComponent(img.name)}`;
+  renderSidebar();
+  await loadAnnotation(img.name);
+}
+
+async function navigate(dir) {
+  if (!images.length) return;
+  let next = currentIdx + dir;
+  if (next < 0) next = images.length - 1;
+  if (next >= images.length) next = 0;
+  await selectImage(next);
+}
+
+// ═══ Annotation ═══
+async function loadAnnotation(name) {
+  const res  = await fetch(`/api/annotation/${encodeURIComponent(name)}`);
+  const data = await res.json();
+  renderQAList(data);
+  isDirty = false;
+}
+
+function renderQAList(data) {
+  qaData = (data || []).map(item => {
+    const convs = item.conversations || [];
+    const q = convs.find(c => c.from === 'human');
+    const a = convs.find(c => c.from === 'gpt');
+    let qv = q ? q.value : '';
+    if (qv.startsWith('<image>\n')) qv = qv.slice(8);
+    return { question: qv, answer: a ? a.value : '' };
+  });
+  if (!qaData.length) addQA();
+  else refreshQACards();
+}
+
+function refreshQACards() {
+  const list = document.getElementById('qa-list');
+  list.innerHTML = '';
+  if (!qaData.length) {
+    list.innerHTML = '<div class="qa-empty">点击下方「添加 QA 对」</div>';
+    return;
+  }
+  qaData.forEach((qa, i) => {
+    const card = document.createElement('div');
+    card.className = 'qa-card';
+    card.innerHTML = `
+      <div class="qa-card-header">
+        <span class="qa-idx">QA #${i + 1}</span>
+        <button class="qa-del" onclick="removeQA(${i})">×</button>
+      </div>
+      <div class="qa-body">
+        <div class="qa-field">
+          <label>问题 Human</label>
+          <textarea rows="3" oninput="onQAChange(${i},'question',this.value)"
+            placeholder="输入问题">${escHtml(qa.question)}</textarea>
+        </div>
+        <div class="qa-field">
+          <label>回答 GPT</label>
+          <textarea rows="2" oninput="onQAChange(${i},'answer',this.value)"
+            placeholder="输入回答">${escHtml(qa.answer)}</textarea>
+        </div>
+      </div>`;
+    list.appendChild(card);
+  });
+  list.scrollTop = list.scrollHeight;
+}
+
+function onQAChange(idx, field, val) { qaData[idx][field] = val; isDirty = true; }
+
+function addQA() {
+  if (currentIdx === -1) return;
+  qaData.push({ question: '', answer: '' });
+  refreshQACards();
+  isDirty = true;
+  const cards = document.querySelectorAll('.qa-card');
+  if (cards.length) {
+    const ta = cards[cards.length - 1].querySelector('textarea');
+    if (ta) { ta.focus(); ta.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
+  }
+}
+
+function removeQA(idx) { qaData.splice(idx, 1); refreshQACards(); isDirty = true; }
+
+async function saveAnnotation() {
+  if (currentIdx === -1) return;
+  // Sync textarea values
+  document.querySelectorAll('.qa-card').forEach((card, i) => {
+    const tas = card.querySelectorAll('textarea');
+    if (qaData[i]) {
+      qaData[i].question = tas[0] ? tas[0].value : '';
+      qaData[i].answer   = tas[1] ? tas[1].value : '';
+    }
+  });
+
+  const img  = images[currentIdx];
+  const payload = qaData
+    .filter(qa => qa.question.trim() || qa.answer.trim())
+    .map((qa, i) => ({
+      id: i + 1, image: `images/${img.name}`,
+      conversations: [
+        { from: 'human', value: `<image>\n${qa.question}` },
+        { from: 'gpt',   value: qa.answer }
+      ]
+    }));
+
+  const res  = await fetch(`/api/annotation/${encodeURIComponent(img.name)}`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload)
+  });
+  const data = await res.json();
+  if (data.error) { showToast(data.error, true); return; }
+
+  isDirty = false;
+  images[currentIdx].annotated = data.saved > 0;
+  images[currentIdx].qa_count  = data.saved;
+  updateStats();
+  renderSidebar();
+  showToast(`✓ 已保存 ${data.saved} 条 QA`);
+}
+
+async function clearAnnotation() {
+  if (currentIdx === -1) return;
+  if (!confirm('确定清除当前图像的所有标注？')) return;
+  const img = images[currentIdx];
+  await fetch(`/api/annotation/${encodeURIComponent(img.name)}`, { method: 'DELETE' });
+  qaData = []; refreshQACards(); isDirty = false;
+  images[currentIdx].annotated = false;
+  images[currentIdx].qa_count  = 0;
+  updateStats(); renderSidebar();
+  showToast('标注已清除');
+}
+
+async function exportJsonl() {
+  const res  = await fetch('/api/export', { method: 'POST' });
+  const data = await res.json();
+  if (data.error) { showToast(data.error, true); return; }
+  showToast(`✓ 导出完成！${data.records} 条记录 → ${data.path}`);
+}
+
+// ═══ Keyboard ═══
+document.addEventListener('keydown', e => {
+  const tag = document.activeElement.tagName;
+  // Block if typing in input (but allow Ctrl+S in textarea)
+  if (tag === 'INPUT') return;
+  if (tag === 'TEXTAREA' && !(e.ctrlKey || e.metaKey)) return;
+  // Block if modal open
+  if (document.getElementById('modal-overlay').style.display !== 'none') return;
+
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); saveAnnotation(); }
+  else if (e.key === 'ArrowLeft')  navigate(-1);
+  else if (e.key === 'ArrowRight') navigate(1);
+  else if (e.key === 'n' || e.key === 'N') addQA();
+});
+
+// ═══ Util ═══
+function escHtml(s) {
+  return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+let _toastTimer;
+function showToast(msg, isError = false) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className   = 'show' + (isError ? ' error' : '');
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => { t.className = ''; }, 3500);
+}
+</script>
+</body>
+</html>

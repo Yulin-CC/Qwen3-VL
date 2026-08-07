@@ -1,0 +1,2376 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Grounding 检查</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+     background:#0f1117;color:#e2e8f0;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+#topbar{display:flex;align-items:center;gap:10px;padding:8px 14px;background:#1a1d27;
+        border-bottom:1px solid #2d3148;flex-shrink:0;flex-wrap:wrap}
+#topbar h1{font-size:15px;font-weight:700;color:#7c86f5;white-space:nowrap}
+#toolbar{display:flex;align-items:center;gap:8px;padding:5px 14px;background:#131620;
+         border-bottom:1px solid #2d3148;flex-shrink:0;font-size:12px;color:#94a3b8}
+.btn{padding:5px 12px;border:none;border-radius:6px;font-size:12px;cursor:pointer;font-weight:500}
+.btn:hover{opacity:.85}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn-primary{background:#7c86f5;color:#fff}
+.btn-success{background:#22c55e;color:#fff}
+.btn-danger{background:#dc2626;color:#fff}
+.btn-outline{background:transparent;border:1px solid #3d4166;color:#94a3b8}
+.btn-outline-danger{background:transparent;border:1px solid #7f1d1d;color:#f87171}
+.btn-sm{padding:3px 8px;font-size:11px}
+.btn.on{background:#7c86f533;border-color:#7c86f5;color:#c7d2fe}
+.chip{font-size:12px;color:#94a3b8;max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#jsons-chip{max-width:420px;color:#cbd5e1}
+#status{font-size:12px;color:#ffffff;margin-left:auto;font-weight:600}
+#gen-chip{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid #3d4166;color:#94a3b8}
+#gen-chip.running{border-color:#f59e0b;color:#fbbf24}
+#gen-chip.ready,#gen-chip.done{border-color:#22c55e;color:#4ade80}
+#gen-chip.error{border-color:#ef4444;color:#f87171}
+
+#main{display:flex;flex:1;overflow:hidden;min-height:0}
+
+.img-item{padding:7px 8px;cursor:pointer;font-size:11px;border-left:3px solid transparent;color:#cbd5e1}
+.img-item:hover,.img-item.active{background:#20243a}
+.img-item.active{border-left-color:#7c86f5}
+.img-item .meta{color:#64748b;font-size:10px;margin-top:2px}
+.dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:#3d4166;margin-right:6px}
+.img-item.exported .dot{background:#22c55e}
+
+.v-resizer,.h-resizer{flex-shrink:0;background:#2d3148;position:relative;z-index:5}
+.v-resizer{width:4px;cursor:col-resize}
+.v-resizer:hover,.v-resizer.active{background:#7c86f5}
+.h-resizer{height:4px;cursor:row-resize}
+.h-resizer:hover,.h-resizer.active{background:#7c86f5}
+
+#center{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0}
+#work{flex:1;display:flex;min-height:0;overflow:hidden}
+#viewer{flex:1;display:flex;flex-direction:column;min-width:120px;background:#0a0c14}
+#canvas-wrap{flex:1;overflow:hidden;position:relative;background:#05060a;cursor:grab;touch-action:none}
+#canvas-wrap.panning{cursor:grabbing}
+#stage{position:absolute;transform-origin:0 0;will-change:transform}
+#stage img{display:block;max-width:none}
+#overlay{position:absolute;left:0;top:0;pointer-events:none}
+#progress-badge{position:absolute;left:10px;top:10px;z-index:6;padding:4px 10px;border-radius:999px;
+                background:#0f1117cc;border:1px solid #3d4166;color:#e2e8f0;font-size:12px;font-weight:600;
+                pointer-events:none;backdrop-filter:blur(4px)}
+
+/* 右侧：目标描述 | 文件概览（第十四次迭代） */
+#side-panel{width:var(--side-w,420px);background:#1a1d27;display:flex;flex-direction:column;overflow:hidden;flex-shrink:0}
+#side-tabs{display:flex;border-bottom:1px solid #2d3148;flex-shrink:0;background:#0f1117}
+.side-tab{flex:1;padding:8px 6px;font-size:12px;color:#94a3b8;background:transparent;border:none;
+          border-bottom:2px solid transparent;cursor:pointer}
+.side-tab:hover{color:#e2e8f0}
+.side-tab.active{color:#e2e8f0;border-bottom-color:#7c86f5;font-weight:600}
+.side-pane{flex:1;overflow-y:auto;min-height:0}
+#obj-list{padding:10px;display:flex;flex-direction:column;gap:10px}
+#file-list{padding:4px 0}
+.obj-card{background:#20243a;border:1px solid #2d3148;border-radius:8px;padding:8px;display:flex;gap:10px;flex-shrink:0;cursor:pointer}
+.obj-card.active{border-color:#7c86f5}
+.obj-card.focus{border-color:#fbbf24;box-shadow:0 0 0 1px #fbbf2488,0 0 12px #fbbf2433}
+.obj-thumb{width:72px;height:72px;object-fit:cover;border-radius:6px;background:#0f1117;flex-shrink:0;border:1px solid #2d3148}
+.obj-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+.obj-body .title{font-size:11px;font-weight:600;display:flex;justify-content:space-between;gap:4px;align-items:center}
+.phrase-list{display:flex;flex-wrap:wrap;gap:6px;align-content:flex-start}
+.phrase-chip{padding:4px 10px;border-radius:999px;border:1.5px solid #3d4166;background:#0f1117;
+             color:#e2e8f0;font-size:12px;cursor:pointer;line-height:1.35;max-width:100%;word-break:break-word}
+.phrase-chip:hover{border-color:#86efac;color:#bbf7d0}
+.phrase-chip.selected{border-color:#22c55e;background:#14532d66;color:#bbf7d0;
+                      box-shadow:inset 0 0 0 1px #22c55e99}
+.obj-card.focus .phrase-chip{border-color:#fbbf2488}
+.obj-card.focus .phrase-chip.selected{border-color:#fbbf24;box-shadow:inset 0 0 0 1px #fbbf24,0 0 8px #fbbf2444}
+#empty-obj{color:#64748b;font-size:12px;padding:16px 4px}
+
+/* 底部 caption */
+#cap-dock{height:var(--cap-h,180px);flex-shrink:0;background:#131620;display:flex;flex-direction:column;min-height:0}
+#cap-tabs{display:flex;align-items:flex-end;gap:0;padding:0 8px;background:#0f1117;
+          border-bottom:1px solid #2d3148;flex-shrink:0;overflow-x:auto;min-height:32px}
+.cap-tab{padding:6px 14px;font-size:12px;color:#94a3b8;cursor:pointer;border:1px solid transparent;
+         border-bottom:none;border-radius:6px 6px 0 0;white-space:nowrap;user-select:none;
+         background:transparent;margin-top:4px}
+.cap-tab:hover{color:#e2e8f0;background:#1a1d27}
+.cap-tab.active{color:#e2e8f0;background:#1a1d27;border-color:#2d3148;font-weight:600;
+                box-shadow:inset 0 2px 0 #7c86f5}
+#cap-tabs-actions{margin-left:auto;display:flex;align-items:center;gap:8px;padding:4px 4px 4px 12px;flex-shrink:0}
+#cap-tab-hint{font-size:11px;color:#64748b;white-space:nowrap;user-select:none}
+#cap-tab-hint.warn{color:#fbbf24;font-weight:600}
+#cap-sheet{flex:1;overflow:auto;padding:10px 14px;background:#1a1d27;min-height:0}
+.cap-meta{font-size:11px;color:#64748b;margin-bottom:8px;display:flex;gap:12px;flex-wrap:wrap}
+.cap-block{margin-bottom:8px}
+.cap-label{font-size:10px;color:#64748b;margin-bottom:3px}
+.cap-text{font-size:14px;line-height:1.55;color:#e2e8f0;white-space:pre-wrap;word-break:break-word}
+.cap-text .cap-ph{color:#fbbf24;font-weight:700;cursor:pointer;border-radius:3px;padding:0 1px;
+                  transition:background .12s, box-shadow .12s}
+.cap-text .cap-ph:hover,.cap-text .cap-ph.sync-on{background:#fbbf2433;box-shadow:0 0 0 1px #fbbf2488}
+.cap-text .cap-ph.active-obj{background:#fbbf2455;box-shadow:0 0 0 1px #fbbf24,0 0 8px #fbbf2444}
+.cap-en-edit{width:100%;background:#0f1117;border:1px solid #2d3148;color:#e2e8f0;
+             border-radius:6px;padding:8px;font-size:13px;resize:vertical;min-height:52px;line-height:1.5;
+             font-family:inherit}
+.cap-en-edit:focus{outline:none;border-color:#7c86f5}
+#cap-empty{color:#64748b;font-size:12px;padding:20px 4px}
+#cap-hint{font-size:11px;color:#64748b;margin-left:8px}
+
+.modal-bg{position:fixed;inset:0;background:#000a;display:none;align-items:center;justify-content:center;z-index:50}
+.modal-bg.show{display:flex}
+.modal{background:#1a1d27;border:1px solid #2d3148;border-radius:10px;width:520px;max-height:70vh;display:flex;flex-direction:column}
+.modal.wide{width:640px}
+.modal-hd{padding:10px 12px;border-bottom:1px solid #2d3148;display:flex;justify-content:space-between;align-items:center}
+.modal-bd{padding:8px;overflow-y:auto;flex:1}
+.dir-item{padding:6px 8px;cursor:pointer;font-size:12px;border-radius:4px}
+.dir-item:hover{background:#20243a}
+.row{display:flex;gap:6px;flex-wrap:wrap}
+#gen-log{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:1.45;
+         color:#cbd5e1;white-space:pre-wrap;background:#0f1117;border:1px solid #2d3148;
+         border-radius:6px;padding:8px;max-height:220px;overflow:auto;min-height:80px}
+#gen-bar-wrap{margin:4px 2px 10px;padding:0 2px}
+#gen-bar-meta{display:flex;justify-content:space-between;font-size:12px;color:#94a3b8;margin-bottom:6px}
+#gen-bar-track{height:10px;background:#2d3148;border-radius:999px;overflow:hidden}
+#gen-bar-fill{height:100%;width:0%;background:linear-gradient(90deg,#7c86f5,#22c55e);
+              border-radius:999px;transition:width .35s ease}
+#gen-bar-fill.error{background:linear-gradient(90deg,#ef4444,#f87171)}
+#gen-progress{list-style:none;padding:0 0 10px;margin:0}
+#gen-progress li{font-size:13px;padding:7px 4px;color:#94a3b8;display:flex;gap:8px;align-items:flex-start}
+#gen-progress li.done{color:#86efac}
+#gen-progress li.running{color:#fbbf24}
+#gen-progress li.error{color:#f87171}
+#gen-progress li.skip{color:#475569}
+#gen-progress .mark{width:1.4em;text-align:center;flex-shrink:0;margin-top:1px}
+#gen-progress .step-body{flex:1;min-width:0}
+#gen-progress .step-row{display:flex;justify-content:space-between;gap:8px;margin-bottom:4px}
+#gen-progress .step-pct{font-size:13px;font-weight:700;font-variant-numeric:tabular-nums;
+                        color:#64748b;flex-shrink:0;min-width:3.2em;text-align:right;
+                        transition:color .15s, transform .12s}
+#gen-progress .step-pct.bump{transform:scale(1.15);color:#fde68a}
+#gen-progress li.done .step-pct{color:#86efac}
+#gen-progress li.running .step-pct{color:#fbbf24}
+#gen-progress li.error .step-pct{color:#f87171}
+#gen-progress .step-detail{font-size:10px;color:#64748b;margin-top:2px}
+#gen-progress .step-track{height:6px;background:#2d3148;border-radius:999px;overflow:hidden}
+#gen-progress .step-fill{height:100%;width:0%;background:#7c86f5;border-radius:999px;transition:width .25s ease}
+#gen-progress li.done .step-fill{background:#22c55e}
+#gen-progress li.running .step-fill{background:#f59e0b}
+#gen-progress li.error .step-fill{background:#ef4444}
+#gen-progress li.skip .step-fill{background:#334155;opacity:.5}
+#gen-bar-pct{font-variant-numeric:tabular-nums;font-weight:700;transition:transform .12s}
+#gen-bar-pct.bump{transform:scale(1.12);color:#fde68a}
+#viz-chip{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid #3d4166;color:#94a3b8}
+#browse-steps{display:flex;gap:8px;padding:8px 12px;border-bottom:1px solid #2d3148;font-size:12px}
+#browse-steps .step{padding:3px 10px;border-radius:999px;border:1px solid #3d4166;color:#64748b}
+#browse-steps .step.on{border-color:#7c86f5;color:#c7d2fe;background:#7c86f522}
+#browse-hint{font-size:12px;color:#94a3b8;padding:0 4px 8px}
+#browse-meta{font-size:12px;padding:8px 10px;border-top:1px solid #2d3148;color:#94a3b8;min-height:40px}
+#browse-meta .ok{color:#86efac}
+#browse-meta .warn{color:#fbbf24}
+#geom-badge{display:inline-block;padding:1px 8px;border-radius:999px;border:1px solid #3d4166;font-size:11px;margin-left:6px}
+#geom-badge.rectangle{border-color:#7c86f5;color:#a5b4fc}
+#geom-badge.polygon{border-color:#22c55e;color:#86efac}
+#geom-badge.mixed{border-color:#f59e0b;color:#fbbf24}
+.err-list{font-size:12px;color:#fca5a5;line-height:1.5;padding:4px 8px}
+.err-list li{margin:4px 0}
+#model-svc-wrap{position:relative;display:inline-flex;align-items:center;gap:0;flex-shrink:0}
+#model-svc-btn{display:inline-flex;align-items:center;gap:7px;background:#0f1220;border:1px solid #3d4166;
+               color:#e2e8f0;border-radius:6px;padding:4px 10px 4px 8px;font-size:12px;cursor:pointer;
+               max-width:200px;line-height:1.2}
+#model-svc-btn:hover{border-color:#7c86f5}
+#model-svc-btn .svc-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:150px}
+#model-svc-btn .svc-caret{color:#64748b;font-size:9px;margin-left:2px}
+#model-svc-menu{display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:40;min-width:220px;
+                max-width:360px;max-height:280px;overflow:auto;background:#1a1d27;border:1px solid #2d3148;
+                border-radius:8px;padding:4px;box-shadow:0 10px 28px #0008}
+#model-svc-wrap.open #model-svc-menu{display:block}
+.model-svc-item{display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:6px;cursor:pointer;
+                font-size:12px;color:#e2e8f0}
+.model-svc-item:hover{background:#20243a}
+.model-svc-item.active{background:#7c86f522}
+.model-svc-item .svc-item-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.model-svc-item .svc-item-def{color:#64748b;font-size:10px;margin-left:4px;flex-shrink:0}
+.svc-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;background:#475569;border:1px solid #334155}
+.svc-dot.ok{background:#4ade80;border-color:#22c55e}
+.svc-dot.bad{background:#f87171;border-color:#ef4444}
+.svc-dot.unk{background:#475569;border-color:#334155}
+.svc-dot.checking{background:#fbbf24;border-color:#f59e0b;animation:svc-pulse 1s ease-in-out infinite}
+@keyframes svc-pulse{0%,100%{opacity:1}50%{opacity:.35}}
+</style>
+</head>
+<body>
+<div id="topbar">
+  <h1>Grounding 检查</h1>
+  <div id="model-svc-wrap">
+    <button type="button" id="model-svc-btn" aria-haspopup="listbox" aria-expanded="false" title="多模态模型服务">
+      <span id="model-svc-dot" class="svc-dot unk"></span>
+      <span class="svc-label">模型服务</span>
+      <span class="svc-caret">▾</span>
+    </button>
+    <div id="model-svc-menu" role="listbox"></div>
+  </div>
+  <button class="btn btn-outline" onclick="openBrowser()">📁选择图像数据集</button>
+  <span class="chip" id="dir-chip">未选择</span>
+  <span class="chip" id="jsons-chip" title="图像目录 / 标签目录">图像：-  标签：-</span>
+  <span id="gen-chip">idle</span>
+  <select id="rules-scene" title="描述/caption 规则场景"
+          style="background:#0f1220;border:1px solid #3d4166;color:#e2e8f0;border-radius:6px;padding:4px 8px;font-size:12px;max-width:160px"
+          onchange="onRulesSceneChange()"></select>
+  <button class="btn btn-outline" id="btn-resume-gen" onclick="openDescribeGenModal()" title="续跑补齐或重新生成描述/caption">描述生成</button>
+  <button class="btn btn-primary" onclick="saveCurrent()">保存</button>
+  <button class="btn btn-success" onclick="openExportModal()">导出 jsons-GD</button>
+  <span id="status"></span>
+</div>
+<div id="toolbar">
+  <button class="btn btn-outline btn-sm" id="btn-fit-full" onclick="setFitMode('full')">全图</button>
+  <button class="btn btn-outline btn-sm" id="btn-fit-zoom" onclick="setFitMode('zoom')">跟目标</button>
+  <button class="btn btn-outline btn-sm on" id="btn-boxes" onclick="toggleBoxes()" title="显示/隐藏">矩形框</button>
+  <span id="cap-hint">A/D 切图 · W/S 切 caption · Ctrl+滚轮缩放 · 按住拖动 · 切图/切 caption 自动保存</span>
+</div>
+
+<div id="main">
+  <div id="center">
+    <div id="work">
+      <div id="viewer">
+        <div id="canvas-wrap">
+          <div id="progress-badge">0/0</div>
+          <div id="stage">
+            <img id="main-img" alt="">
+            <canvas id="overlay"></canvas>
+          </div>
+        </div>
+      </div>
+      <div class="v-resizer" id="res-side" title="拖动调整宽度"></div>
+      <div id="side-panel">
+        <div id="side-tabs">
+          <button type="button" class="side-tab active" data-tab="objs">目标描述</button>
+          <button type="button" class="side-tab" data-tab="files">文件概览</button>
+        </div>
+        <div id="obj-list" class="side-pane"></div>
+        <div id="file-list" class="side-pane" style="display:none"></div>
+      </div>
+    </div>
+    <div class="h-resizer" id="res-cap" title="拖动调整高度"></div>
+    <div id="cap-dock">
+      <div id="cap-tabs">
+        <div id="cap-tab-list" style="display:flex;align-items:flex-end"></div>
+        <div id="cap-tabs-actions">
+          <span id="cap-tab-hint" title="键盘 W/S 切换前后 caption">W/S 切 caption</span>
+          <button class="btn btn-primary btn-sm" onclick="addCaption()" title="新增 caption，优先未覆盖目标">新增</button>
+          <button class="btn btn-outline btn-sm" onclick="refreshActiveCaption()" title="仅重写当前这条 caption">刷新本条</button>
+          <button class="btn btn-outline-danger btn-sm" onclick="deleteActiveCaption()">删除本条</button>
+        </div>
+      </div>
+      <div id="cap-sheet"></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="browser">
+  <div class="modal">
+    <div class="modal-hd">
+      <strong id="browse-title">① 选择图像数据集</strong>
+      <div class="row">
+        <button class="btn btn-outline btn-sm" id="btn-browse-back" onclick="browseWizardBack()" style="display:none">上一步</button>
+        <button class="btn btn-outline btn-sm" onclick="browseParent()">上级</button>
+        <button class="btn btn-primary btn-sm" id="btn-browse-next" onclick="confirmBrowseStep()">下一步</button>
+        <button class="btn btn-outline btn-sm" onclick="closeBrowser()">关闭</button>
+      </div>
+    </div>
+    <div id="browse-steps">
+      <span class="step on" id="step-badge-1">① 图像</span>
+      <span class="step" id="step-badge-2">② 标签</span>
+    </div>
+    <div class="modal-bd">
+      <div id="browse-hint">请选择含图片的文件夹（如 images / JPEGImages），或含图像子目录的数据集根目录</div>
+      <div class="row" style="gap:6px;margin-bottom:8px;align-items:center">
+        <input id="browse-path-input" type="text" placeholder="粘贴路径后回车跳转"
+               style="flex:1;min-width:0;background:#0f1220;border:1px solid #3d4166;color:#e2e8f0;border-radius:8px;padding:6px 8px;font-size:12px"
+               onkeydown="if(event.key==='Enter'){browseJumpInput();}">
+        <button class="btn btn-outline btn-sm" onclick="browseJumpInput()">跳转</button>
+      </div>
+      <div id="browse-path" style="font-size:11px;color:#64748b;margin-bottom:6px"></div>
+      <div id="browse-list"></div>
+    </div>
+    <div id="browse-meta">等待选择…</div>
+  </div>
+</div>
+
+<div class="modal-bg" id="gen-modal">
+  <div class="modal wide">
+    <div class="modal-hd">
+      <strong id="gen-modal-title">正在生成标签描述和caption...</strong>
+      <span id="gen-modal-stage" style="font-size:12px;color:#94a3b8"></span>
+    </div>
+    <div class="modal-bd">
+      <div id="gen-bar-wrap">
+        <div id="gen-bar-meta">
+          <span id="gen-bar-label">准备中…</span>
+          <span id="gen-bar-pct">0%</span>
+        </div>
+        <div id="gen-bar-track"><div id="gen-bar-fill"></div></div>
+      </div>
+      <ul id="gen-progress"></ul>
+      <div id="gen-log"></div>
+      <div id="gen-errors" class="err-list" style="display:none"></div>
+      <div class="row" style="margin-top:10px;justify-content:flex-end">
+        <button class="btn btn-outline btn-sm" id="btn-gen-close" onclick="closeGenModal()" style="display:none">关闭</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="export-modal">
+  <div class="modal">
+    <div class="modal-hd">
+      <strong>导出 jsons-GD</strong>
+      <button class="btn btn-outline btn-sm" onclick="closeExportModal()">关闭</button>
+    </div>
+    <div class="modal-bd">
+      <div style="margin-bottom:12px">请选择导出范围</div>
+      <div id="export-stem-hint" style="font-size:12px;color:#94a3b8;margin-bottom:14px"></div>
+      <div class="row" style="gap:10px;flex-wrap:wrap">
+        <button class="btn btn-primary" onclick="doExport('current')">仅当前文件</button>
+        <button class="btn btn-success" onclick="doExport('all')">整个文件夹</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="describe-gen-modal">
+  <div class="modal">
+    <div class="modal-hd">
+      <strong>描述生成</strong>
+      <button class="btn btn-outline btn-sm" onclick="closeDescribeGenModal()">关闭</button>
+    </div>
+    <div class="modal-bd">
+      <div style="margin-bottom:10px;font-size:13px;color:#cbd5e1">请选择生成方式</div>
+      <div style="font-size:12px;color:#94a3b8;margin-bottom:14px;line-height:1.5">
+        <div><b style="color:#e2e8f0">续跑补齐</b>：缺啥补啥，不覆盖已有人工/已生成结果</div>
+        <div style="margin-top:6px"><b style="color:#e2e8f0">重新生成</b>：强制重跑 describe + caption（会覆盖已有描述与 caption）</div>
+      </div>
+      <div class="row" style="gap:10px;flex-wrap:wrap">
+        <button class="btn btn-primary" onclick="confirmDescribeGen('resume')">1. 续跑补齐</button>
+        <button class="btn btn-danger" onclick="confirmDescribeGen('regenerate')">2. 重新生成</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let images = [];
+let curStem = null;
+let item = null;
+let activeCap = 0;
+let fitMode = 'full';
+let showBoxes = true;
+let browsePath = '';
+let naturalW = 1, naturalH = 1;
+let zhSeq = 0;           // 翻译请求序号：切图后丢弃旧结果
+let highlightObjId = null;  // 右侧点击高亮的目标
+let dirty = false;
+let genPolling = false;
+let sideTab = 'objs';
+let selectedJsons = 'jsons';
+let selectedImages = 'images';
+let labelGeometry = '';  // rectangle | polygon | mixed
+let browseStep = 1;      // 1=图像 2=标签
+let pendingImageRoot = '';
+let pendingImagesDirname = 'images';
+let browseInfo = null;   // 最近一次 browse API 结果
+let nativeFolderPicker = false;  // Windows：系统选文件夹对话框
+let rulesScene = '';             // 规则场景 id，空=通用
+/** 手动视图：scale=屏像素/图像素；tx/ty=stage 左上角相对 wrap */
+let viewScale = 1, viewTx = 0, viewTy = 0;
+let viewManual = false;
+let panDrag = null;
+
+async function api(url, opts) {
+  const r = await fetch(url, opts);
+  let data = null;
+  try { data = await r.json(); } catch (_) { data = {}; }
+  if (!r.ok && data && !data.error) data.error = `HTTP ${r.status}`;
+  return data || {};
+}
+function setStatus(t){ document.getElementById('status').textContent = t || ''; }
+function markDirty(){ dirty = true; }
+
+/** 刚手动刷新过的目标，避免 ensureZh 再次整表覆盖 */
+const refreshedDescAt = {};
+
+function escHtml(s){
+  return String(s ?? '').replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+
+/** 成对短语条目：用于中英同 key 同步 + 点击高亮目标 */
+function activePhraseEntries(cap){
+  const entries = [];
+  if (!cap || !item) return entries;
+  (cap.phrases || []).forEach(p => {
+    const en = (p.phrase || '').trim();
+    if (!en) return;
+    const oid = p.obj_id;
+    const desc = item.descriptions[String(oid)] || {};
+    const phrases = desc.phrases || [];
+    const zhs = desc.zh || [];
+    const idx = phrases.indexOf(en);
+    const zh = (idx >= 0 && zhs[idx]) ? String(zhs[idx]).trim() : '';
+    entries.push({
+      obj_id: oid,
+      en,
+      zh,
+      key: `${oid}::${en}`,
+    });
+  });
+  return entries;
+}
+
+function activePhraseLists(cap){
+  const entries = activePhraseEntries(cap);
+  return {
+    en: entries.map(e => e.en).filter(Boolean),
+    zh: entries.map(e => e.zh).filter(Boolean),
+    entries,
+  };
+}
+
+/**
+ * 在文本中高亮短语；entries 带 obj_id/key，便于中英同步与点击画框。
+ * field: 'en' | 'zh'
+ */
+function highlightPhrases(text, phrasesOrEntries, field){
+  const src = String(text ?? '');
+  if (!src) return '';
+  let entries = [];
+  if (Array.isArray(phrasesOrEntries) && phrasesOrEntries.length &&
+      typeof phrasesOrEntries[0] === 'object' && phrasesOrEntries[0] !== null){
+    entries = phrasesOrEntries;
+  } else {
+    entries = (phrasesOrEntries || []).filter(Boolean).map(ph => ({
+      en: String(ph), zh: String(ph), obj_id: '', key: String(ph),
+    }));
+    field = field || 'en';
+  }
+  const f = field || 'en';
+  const cand = entries
+    .map(e => ({e, needle: (e[f] || '').trim()}))
+    .filter(x => x.needle)
+    .sort((a, b) => b.needle.length - a.needle.length);
+  if (!cand.length) return escHtml(src);
+
+  const ranges = []; // {start,end,key,obj_id}
+  for (const {e, needle} of cand){
+    let from = 0;
+    while (from < src.length){
+      const i = src.indexOf(needle, from);
+      if (i < 0) break;
+      const end = i + needle.length;
+      const overlap = ranges.some(r => !(end <= r.start || i >= r.end));
+      if (!overlap){
+        ranges.push({start: i, end, key: e.key || '', obj_id: e.obj_id});
+      }
+      from = end;
+    }
+  }
+  ranges.sort((a, b) => a.start - b.start);
+  let out = '', cursor = 0;
+  for (const r of ranges){
+    out += escHtml(src.slice(cursor, r.start));
+    const oidAttr = (r.obj_id === 0 || r.obj_id) ? ` data-obj-id="${escHtml(String(r.obj_id))}"` : '';
+    const keyAttr = r.key ? ` data-ph-key="${escHtml(r.key)}"` : '';
+    const active = (highlightObjId != null && r.obj_id === highlightObjId) ? ' active-obj' : '';
+    out += `<span class="cap-ph${active}"${oidAttr}${keyAttr} title="点击高亮图中目标">${escHtml(src.slice(r.start, r.end))}</span>`;
+    cursor = r.end;
+  }
+  out += escHtml(src.slice(cursor));
+  return out;
+}
+
+function syncCapPhraseActive(){
+  const sheet = document.getElementById('cap-sheet');
+  if (!sheet) return;
+  sheet.querySelectorAll('.cap-ph').forEach(el => {
+    const match = highlightObjId != null &&
+      String(el.getAttribute('data-obj-id')) === String(highlightObjId);
+    el.classList.toggle('active-obj', match);
+  });
+}
+
+/** 统一高亮：图框 ↔ caption 词条 ↔ 右侧描述卡 */
+function setHighlightObj(oid, {toggle=true, fromCanvas=false} = {}){
+  if (oid == null || Number.isNaN(oid)) return;
+  if (toggle && highlightObjId === oid) highlightObjId = null;
+  else highlightObjId = oid;
+  if (fromCanvas && highlightObjId != null) setSideTab('objs');
+  syncCapPhraseActive();
+  renderObjects();
+  drawBoxes();
+  if (highlightObjId != null){
+    const card = document.querySelector('#obj-list .obj-card.focus');
+    if (card) card.scrollIntoView({block: 'nearest', behavior: 'smooth'});
+    const ph = document.querySelector('#cap-sheet .cap-ph.active-obj');
+    if (ph) ph.scrollIntoView({block: 'nearest', behavior: 'smooth'});
+    setStatus(`高亮 obj ${highlightObjId}`);
+  } else {
+    setStatus(curStem || '');
+  }
+}
+
+function bindCapPhraseInteractions(){
+  const sheet = document.getElementById('cap-sheet');
+  if (!sheet) return;
+  const allPh = () => [...sheet.querySelectorAll('.cap-ph')];
+  allPh().forEach(sp => {
+    sp.onmouseenter = () => {
+      const key = sp.getAttribute('data-ph-key');
+      if (!key) return;
+      allPh().forEach(el => {
+        if (el.getAttribute('data-ph-key') === key) el.classList.add('sync-on');
+      });
+    };
+    sp.onmouseleave = () => {
+      allPh().forEach(el => el.classList.remove('sync-on'));
+    };
+    sp.onclick = (ev) => {
+      ev.stopPropagation();
+      const oidRaw = sp.getAttribute('data-obj-id');
+      if (oidRaw == null || oidRaw === '') return;
+      const oid = parseInt(oidRaw, 10);
+      if (Number.isNaN(oid)) return;
+      setHighlightObj(oid, {toggle: true});
+    };
+  });
+}
+
+function rightPanelObjIds(active){
+  const valid = new Set(((item && item.meta && item.meta.objects) || []).map(o => o.obj_id));
+  const ids = [];
+  (active.obj_ids || []).forEach(id => {
+    if (valid.has(id) && !ids.includes(id)) ids.push(id);
+  });
+  return ids;
+}
+
+/* ── 面板拖拽尺寸 ── */
+const SIDE_W_DEFAULT = 420;
+const SIDE_W_MIN = 240;
+const SIDE_W_MAX = 720;
+function loadLayout(){
+  // v22：默认右侧加宽；旧 v21 的 300 默认不继承，避免长描述仍挤在窄栏
+  const s22 = JSON.parse(localStorage.getItem('gd_layout_v22') || 'null');
+  const s21 = JSON.parse(localStorage.getItem('gd_layout_v21') || '{}');
+  const s = s22 || s21;
+  let sideW = s.sideW || s.objW || null;
+  if (!s22 && sideW === 300) sideW = null;
+  if (sideW) document.documentElement.style.setProperty('--side-w', sideW + 'px');
+  else document.documentElement.style.setProperty('--side-w', SIDE_W_DEFAULT + 'px');
+  if (s.capH) document.documentElement.style.setProperty('--cap-h', s.capH + 'px');
+  if (s.sideTab) sideTab = s.sideTab;
+}
+function saveLayout(){
+  const css = getComputedStyle(document.documentElement);
+  localStorage.setItem('gd_layout_v22', JSON.stringify({
+    sideW: parseInt(css.getPropertyValue('--side-w')) || SIDE_W_DEFAULT,
+    capH: parseInt(css.getPropertyValue('--cap-h')) || 180,
+    sideTab,
+  }));
+}
+function bindResizer(el, onMove){
+  el.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    el.setPointerCapture(e.pointerId);
+    el.classList.add('active');
+    const move = (ev) => {
+      if (ev.pointerId !== e.pointerId) return;
+      onMove(ev);
+    };
+    const up = (ev) => {
+      if (ev.pointerId !== e.pointerId) return;
+      el.classList.remove('active');
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerup', up);
+      el.removeEventListener('pointercancel', up);
+      saveLayout();
+      applyView();
+    };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+  });
+}
+function initResizers(){
+  loadLayout();
+  bindResizer(document.getElementById('res-side'), (ev) => {
+    const mainRight = document.getElementById('main').getBoundingClientRect().right;
+    const w = Math.min(SIDE_W_MAX, Math.max(SIDE_W_MIN, mainRight - ev.clientX));
+    document.documentElement.style.setProperty('--side-w', w + 'px');
+  });
+  bindResizer(document.getElementById('res-cap'), (ev) => {
+    const centerBottom = document.getElementById('center').getBoundingClientRect().bottom;
+    const h = Math.min(420, Math.max(120, centerBottom - ev.clientY));
+    document.documentElement.style.setProperty('--cap-h', h + 'px');
+  });
+}
+function setSideTab(tab){
+  sideTab = tab === 'files' ? 'files' : 'objs';
+  document.querySelectorAll('.side-tab').forEach(b => {
+    b.classList.toggle('active', b.dataset.tab === sideTab);
+  });
+  document.getElementById('obj-list').style.display = sideTab === 'objs' ? 'flex' : 'none';
+  document.getElementById('file-list').style.display = sideTab === 'files' ? 'block' : 'none';
+  saveLayout();
+}
+function initSideTabs(){
+  document.querySelectorAll('.side-tab').forEach(b => {
+    b.onclick = () => setSideTab(b.dataset.tab);
+  });
+  setSideTab(sideTab);
+}
+
+function setGenChip(status, detail){
+  const el = document.getElementById('gen-chip');
+  el.className = '';
+  el.id = 'gen-chip';
+  if (status) el.classList.add(status);
+  el.textContent = detail || status || 'idle';
+}
+function geometryLabel(geom){
+  if (geom === 'polygon') return '多边形';
+  if (geom === 'rectangle') return '矩形框';
+  if (geom === 'mixed') return '框/多边形';
+  return '矩形框';
+}
+
+function pathChipShort(name){
+  if (!name || name === '.') return '(根目录)';
+  const parts = String(name).replace(/\\/g, '/').split('/').filter(Boolean);
+  return parts[parts.length - 1] || name;
+}
+
+function setPathChip(imagesName, labelsName){
+  if (imagesName != null && imagesName !== '') selectedImages = imagesName;
+  if (labelsName != null && labelsName !== '') selectedJsons = labelsName;
+  const imgShort = pathChipShort(selectedImages || 'images');
+  const labShort = pathChipShort(selectedJsons || 'jsons');
+  const el = document.getElementById('jsons-chip');
+  if (el){
+    el.textContent = `图像：${imgShort}  标签：${labShort}`;
+    el.title = `图像目录 ${selectedImages || 'images'} · 标签目录 ${selectedJsons || 'jsons'}`;
+  }
+  syncAnnoButton();
+}
+
+/** @deprecated 兼容旧调用：只更新标签名 */
+function setJsonsChip(name){
+  setPathChip(selectedImages || 'images', name || selectedJsons || 'jsons');
+}
+
+function setGeometry(geom){
+  labelGeometry = geom || '';
+  syncAnnoButton();
+}
+
+/** 工具栏显隐按钮：按标签属性更名；顶栏不再单独放 geom-chip（保留 gen-chip done:xxx） */
+function syncAnnoButton(){
+  const btn = document.getElementById('btn-boxes');
+  if (!btn) return;
+  let geom = labelGeometry;
+  if (!geom && item && item.meta && item.meta.objects){
+    const types = new Set(
+      (item.meta.objects || []).map(o => (o.shape_type || '').toLowerCase()).filter(Boolean)
+    );
+    if (types.has('polygon') && !types.has('rectangle')) geom = 'polygon';
+    else if (types.has('rectangle') && !types.has('polygon')) geom = 'rectangle';
+    else if (types.size > 1) geom = 'mixed';
+  }
+  if (!geom){
+    if (selectedJsons === 'jsons-segm' || selectedJsons === 'jsons-sem') geom = 'polygon';
+    else if (selectedJsons === 'jsons-det'
+      || selectedJsons === 'annotations'
+      || selectedJsons === 'xmls'
+      || selectedJsons === 'voc') geom = 'rectangle';
+  }
+  const name = geometryLabel(geom);
+  btn.textContent = name;
+  btn.title = (showBoxes ? '隐藏' : '显示') + name;
+  btn.classList.toggle('on', showBoxes);
+}
+
+function stepPct(s){
+  if (typeof s.pct === 'number') return Math.max(0, Math.min(100, Math.round(s.pct)));
+  if (s.status === 'done' || s.status === 'skip') return 100;
+  if (s.status === 'error') return 100;
+  if (s.status === 'running') return 5;
+  return 0;
+}
+
+/** 更新百分比数字并做轻微跳动 */
+function setPctText(el, pct){
+  if (!el) return;
+  const next = pct + '%';
+  if (el.textContent !== next){
+    el.textContent = next;
+    el.classList.remove('bump');
+    // 强制重绘以重触发动画
+    void el.offsetWidth;
+    el.classList.add('bump');
+    clearTimeout(el._bumpTimer);
+    el._bumpTimer = setTimeout(() => el.classList.remove('bump'), 160);
+  }
+}
+
+function renderProgress(steps){
+  const ul = document.getElementById('gen-progress');
+  if (!ul) return;
+  const list = steps && steps.length ? steps : [
+    {id:'validate', label:'数据集校验', status:'pending', pct:0},
+    {id:'crop', label:'裁剪目标 (crop)', status:'pending', pct:0},
+    {id:'describe', label:'标签描述 (describe)', status:'pending', pct:0},
+    {id:'caption', label:'生成 caption', status:'pending', pct:0},
+    {id:'done', label:'完成', status:'pending', pct:0},
+  ];
+
+  // 尽量原地更新，避免百分比跳动时整表重绘丢动画
+  if (ul.children.length !== list.length){
+    ul.innerHTML = list.map(s => {
+      const pct = stepPct(s);
+      let mark = '○';
+      if (s.status === 'done') mark = '✅';
+      else if (s.status === 'running') mark = '▶';
+      else if (s.status === 'error') mark = '✕';
+      else if (s.status === 'skip') mark = '–';
+      return `<li class="${escHtml(s.status)}" data-id="${escHtml(s.id)}">
+        <span class="mark">${mark}</span>
+        <div class="step-body">
+          <div class="step-row"><span class="step-label">${escHtml(s.label)}</span><span class="step-pct">${pct}%</span></div>
+          <div class="step-track"><div class="step-fill" style="width:${pct}%"></div></div>
+          <div class="step-detail"></div>
+        </div>
+      </li>`;
+    }).join('');
+  }
+
+  list.forEach(s => {
+    const li = ul.querySelector(`li[data-id="${s.id}"]`);
+    if (!li) return;
+    li.className = s.status || 'pending';
+    const pct = stepPct(s);
+    let mark = '○';
+    if (s.status === 'done') mark = '✅';
+    else if (s.status === 'running') mark = '▶';
+    else if (s.status === 'error') mark = '✕';
+    else if (s.status === 'skip') mark = '–';
+    const markEl = li.querySelector('.mark');
+    if (markEl) markEl.textContent = mark;
+    setPctText(li.querySelector('.step-pct'), pct);
+    const fill = li.querySelector('.step-fill');
+    if (fill) fill.style.width = pct + '%';
+    const det = li.querySelector('.step-detail');
+    if (det){
+      det.textContent = (s.status === 'running' && s.detail) ? s.detail : '';
+    }
+  });
+
+  // 总进度：各活跃步骤 pct 平均
+  const active = list.filter(s => s.status !== 'skip');
+  const total = Math.max(active.length, 1);
+  let score = 0;
+  let runningLabel = '';
+  let hasError = false;
+  active.forEach(s => {
+    const p = stepPct(s);
+    if (s.status === 'error'){ hasError = true; runningLabel = s.label + ' 失败'; }
+    else if (s.status === 'running') runningLabel = `${s.label} ${p}%` + (s.detail ? ` (${s.detail})` : '');
+    score += (s.status === 'done') ? 100 : (s.status === 'error' ? 100 : p);
+  });
+  const pct = Math.min(100, Math.round(score / total));
+  const fill = document.getElementById('gen-bar-fill');
+  const pctEl = document.getElementById('gen-bar-pct');
+  const labEl = document.getElementById('gen-bar-label');
+  if (fill){
+    fill.style.width = pct + '%';
+    fill.classList.toggle('error', hasError);
+  }
+  setPctText(pctEl, pct);
+  if (labEl){
+    if (hasError) labEl.textContent = runningLabel || '失败';
+    else if (pct >= 100) labEl.textContent = '全部完成';
+    else if (runningLabel) labEl.textContent = '进行中：' + runningLabel;
+    else labEl.textContent = '准备中…';
+  }
+}
+
+function showGenModal(title){
+  document.getElementById('gen-modal-title').textContent =
+    title || '正在生成标签描述和caption...';
+  document.getElementById('gen-errors').style.display = 'none';
+  document.getElementById('btn-gen-close').style.display = 'none';
+  renderProgress([]);
+  document.getElementById('gen-modal').classList.add('show');
+}
+function closeGenModal(){
+  document.getElementById('gen-modal').classList.remove('show');
+}
+function appendGenLog(lines){
+  const box = document.getElementById('gen-log');
+  box.textContent = (lines || []).join('\n');
+  box.scrollTop = box.scrollHeight;
+}
+
+function syncBrowseWizardUI(){
+  const s1 = document.getElementById('step-badge-1');
+  const s2 = document.getElementById('step-badge-2');
+  const title = document.getElementById('browse-title');
+  const hint = document.getElementById('browse-hint');
+  const back = document.getElementById('btn-browse-back');
+  const next = document.getElementById('btn-browse-next');
+  if (browseStep === 1){
+    s1.classList.add('on'); s2.classList.remove('on');
+    title.textContent = '① 选择图像数据集';
+    hint.textContent = '请选择含图片的文件夹（images / JPEGImages / 任意名），或含图像子目录的数据集根目录';
+    back.style.display = 'none';
+    next.textContent = '下一步：选择标签';
+  } else {
+    s1.classList.remove('on'); s2.classList.add('on');
+    title.textContent = '② 选择标签数据集';
+    hint.textContent = '请选择标签目录：LabelMe .json（jsons*）或 VOC .xml（annotations / xmls）';
+    back.style.display = '';
+    next.textContent = '开始校验并生成';
+  }
+  updateBrowseMeta();
+}
+
+function updateBrowseMeta(){
+  const meta = document.getElementById('browse-meta');
+  if (!browseInfo){ meta.textContent = '等待选择…'; return; }
+  if (browseStep === 1){
+    if (browseInfo.has_images){
+      const imgKey = browseInfo.images_dirname || 'images';
+      meta.innerHTML = `<span class="ok">✓ 已识别图像目录（${escHtml(pathChipShort(imgKey))}）</span>`
+        + `<br><span style="color:#64748b">根：${escHtml(browseInfo.images_root || '')}</span>`
+        + `<br><span style="color:#64748b">图：${escHtml(browseInfo.images_dir || '')}</span>`;
+    } else {
+      meta.innerHTML = `<span class="warn">当前目录未检测到图像，请进入含图片的文件夹</span>`;
+    }
+  } else {
+    if (browseInfo.has_label_jsons){
+      const g = browseInfo.geometry || '?';
+      const gLabel = geometryLabel(g);
+      meta.innerHTML = `<span class="ok">✓ 已识别标签目录</span>`
+        + `<span class="geom-badge ${escHtml(g)}" id="geom-badge">${escHtml(gLabel)} · ${escHtml(g)}</span>`
+        + `<br><span style="color:#64748b">${escHtml(browseInfo.current || '')}</span>`;
+    } else {
+      meta.innerHTML = `<span class="warn">当前目录无 .json/.xml 标签，请选择 jsons* 或 annotations/xmls</span>`;
+    }
+  }
+}
+
+function closeBrowser(){ document.getElementById('browser').classList.remove('show'); }
+
+function currentDatasetHint(){
+  const chip = (document.getElementById('dir-chip').textContent || '').trim();
+  if (chip && chip !== '未选择') return chip;
+  return '';
+}
+
+function relDirKey(root, absPath){
+  let key = absPath || '';
+  const rootNorm = (root || '').replace(/[\\/]+$/, '');
+  const pathNorm = (absPath || '').replace(/[\\/]+$/, '');
+  if (rootNorm && (pathNorm === rootNorm ||
+      pathNorm.startsWith(rootNorm + '\\') ||
+      pathNorm.startsWith(rootNorm + '/') ||
+      pathNorm.toLowerCase().startsWith(rootNorm.toLowerCase() + '\\') ||
+      pathNorm.toLowerCase().startsWith(rootNorm.toLowerCase() + '/'))){
+    key = pathNorm.slice(rootNorm.length).replace(/^[\\/]+/, '') || '.';
+  }
+  if (key && !/^[A-Za-z]:/.test(key) && !key.startsWith('/')){
+    key = key.replace(/\\/g, '/');
+  }
+  return key || '.';
+}
+
+async function finishLabelSelection(imageRoot, labelPath, geom, imagesDirname){
+  let imagesKey = imagesDirname || pendingImagesDirname || selectedImages || 'images';
+  // 若传入的是绝对图像路径，相对化到 dataset root
+  if (imagesKey && (/^[A-Za-z]:/.test(imagesKey) || imagesKey.startsWith('/'))){
+    imagesKey = relDirKey(imageRoot, imagesKey);
+  }
+  if (imagesKey && !/^[A-Za-z]:/.test(imagesKey) && !imagesKey.startsWith('/')){
+    imagesKey = imagesKey.replace(/\\/g, '/');
+  }
+  const jsonsKey = relDirKey(imageRoot, labelPath);
+  selectedImages = imagesKey;
+  selectedJsons = jsonsKey;
+  setGeometry(geom || '');
+  setPathChip(imagesKey, jsonsKey);
+  document.getElementById('dir-chip').textContent = imageRoot;
+  const ok = await openDataset(imageRoot, {
+    images_dirname: imagesKey,
+    jsons_dirname: jsonsKey,
+    geometry: geom || '',
+  });
+  if (ok) closeBrowser();
+}
+
+async function pickFolderNative(title, initial){
+  setStatus('请在系统对话框中选择文件夹…');
+  const data = await api('/api/pick_folder', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ title: title || '选择文件夹', initial: initial || '' }),
+  });
+  return data;
+}
+
+/** Windows：两步原生选夹（图像 → 标签） */
+async function openNativeBrowseWizard(){
+  browseStep = 1;
+  pendingImageRoot = '';
+  pendingImagesDirname = 'images';
+  const start = currentDatasetHint();
+  const r1 = await pickFolderNative('选择图像文件夹（images / JPEGImages / 任意含图目录）', start);
+  if (!r1 || r1.cancelled){ setStatus('已取消选择'); return; }
+  if (r1.error){ alert(r1.error); return; }
+  if (!r1.has_images){
+    alert('所选目录未检测到图像。请选择含图片的文件夹，或含图像子目录的数据集根目录。');
+    return;
+  }
+  pendingImageRoot = r1.images_root || r1.path || r1.current;
+  pendingImagesDirname = r1.images_dirname || relDirKey(pendingImageRoot, r1.images_dir || r1.path || r1.current);
+  const r2 = await pickFolderNative(
+    '选择标签文件夹（jsons* 或 annotations / xmls）',
+    pendingImageRoot
+  );
+  if (!r2 || r2.cancelled){ setStatus('已取消选择标签'); return; }
+  if (r2.error){ alert(r2.error); return; }
+  if (!r2.has_label_jsons){
+    alert('所选目录无标签文件。请选择含 LabelMe .json 或 VOC .xml 的目录（如 jsons* / annotations）。');
+    return;
+  }
+  await finishLabelSelection(
+    pendingImageRoot, r2.path || r2.current, r2.geometry || '', pendingImagesDirname,
+  );
+}
+
+async function openWebBrowser(){
+  document.getElementById('browser').classList.add('show');
+  browseStep = 1;
+  pendingImageRoot = '';
+  pendingImagesDirname = 'images';
+  syncBrowseWizardUI();
+  await browseTo(currentDatasetHint());
+}
+
+async function openBrowser(){
+  if (nativeFolderPicker){
+    await openNativeBrowseWizard();
+    return;
+  }
+  await openWebBrowser();
+}
+
+function normalizeBrowsePath(path){
+  if (!path) return '';
+  // 避免 Windows 反斜杠 / 异常名把路径带歪
+  return String(path).replace(/\\/g, '/').replace(/\/+/g, '/');
+}
+
+async function browseTo(path){
+  path = normalizeBrowsePath(path);
+  const q = path ? `?path=${encodeURIComponent(path)}` : '';
+  const data = await api('/api/browse' + q);
+  if (data.error){
+    alert(data.error);
+    return;
+  }
+  browseInfo = data;
+  browsePath = data.current;
+  document.getElementById('browse-path').textContent = browsePath;
+  const inp = document.getElementById('browse-path-input');
+  if (inp) inp.value = browsePath || '';
+  const list = document.getElementById('browse-list');
+  list.innerHTML = '';
+  (data.entries || []).forEach(e => {
+    if (!e || !e.name || /[\\/]/.test(e.name)) return;
+    const d = document.createElement('div');
+    d.className = 'dir-item';
+    let mark = '';
+    if (browseStep === 1 && /^(images?|imgs?|jpegimages|pictures|photos|pic)$/i.test(e.name)) mark = ' [images]';
+    if (browseStep === 2 && /jsons|annotations|xmls|^voc$/i.test(e.name)) mark = ' [labels]';
+    d.textContent = '📁 ' + e.name + mark;
+    d.onclick = () => browseTo(e.path);
+    list.appendChild(d);
+  });
+  updateBrowseMeta();
+}
+function browseJumpInput(){
+  const inp = document.getElementById('browse-path-input');
+  const p = normalizeBrowsePath((inp && inp.value) || '');
+  if (!p){ browseTo(''); return; }
+  browseTo(p);
+}
+function browseParent(){
+  if (browseInfo && browseInfo.parent){
+    browseTo(browseInfo.parent);
+    return;
+  }
+  if (!browsePath) return;
+  const parent = browsePath.replace(/\/$/, '').split('/').slice(0,-1).join('/') || '/';
+  browseTo(parent);
+}
+function browseWizardBack(){
+  if (browseStep !== 2) return;
+  browseStep = 1;
+  syncBrowseWizardUI();
+  browseTo(pendingImageRoot || browsePath);
+}
+
+async function confirmBrowseStep(){
+  if (browseStep === 1){
+    if (!browseInfo || !browseInfo.has_images){
+      alert('请先进入含图片的文件夹（或含图像子目录的数据集根目录）');
+      return;
+    }
+    pendingImageRoot = browseInfo.images_root || browsePath;
+    pendingImagesDirname = browseInfo.images_dirname
+      || relDirKey(pendingImageRoot, browseInfo.images_dir || browsePath);
+    browseStep = 2;
+    syncBrowseWizardUI();
+    // 第二步从图像根目录开始，方便选 jsons*
+    await browseTo(pendingImageRoot);
+    return;
+  }
+  // step 2：确认标签目录
+  if (!browseInfo || !browseInfo.has_label_jsons){
+    alert('请选择含 LabelMe .json 或 VOC .xml 的标签目录');
+    return;
+  }
+  await finishLabelSelection(
+    pendingImageRoot, browsePath, browseInfo.geometry || '', pendingImagesDirname,
+  );
+}
+
+function formatValidationErrors(validation){
+  const errs = (validation && validation.errors) || [];
+  if (!errs.length) return '数据集校验失败';
+  return '数据集校验失败：\n\n' + errs.map((e, i) => `${i + 1}. ${e}`).join('\n');
+}
+
+async function pollGenerateUntilDone(){
+  if (genPolling) return false;
+  genPolling = true;
+  try {
+    while (true){
+      const st = await api('/api/generate/status');
+      setGenChip(st.status, st.stage ? `${st.status}:${st.stage}` : st.status);
+      document.getElementById('gen-modal-stage').textContent = st.stage || '';
+      document.getElementById('gen-modal-title').textContent = '正在生成标签描述和caption...';
+      renderProgress(st.progress || []);
+      appendGenLog(st.logs || []);
+      if (st.status === 'done' || st.status === 'ready'){
+        renderProgress(st.progress || []);
+        return true;
+      }
+      if (st.status === 'error'){
+        document.getElementById('gen-modal-title').textContent = '生成失败';
+        renderProgress(st.progress || []);
+        const box = document.getElementById('gen-errors');
+        box.style.display = 'block';
+        box.innerHTML = `<li>${escHtml(st.error || '未知错误')}</li>`;
+        document.getElementById('btn-gen-close').style.display = '';
+        return false;
+      }
+      if (st.status === 'idle') return true;
+      await new Promise(r => setTimeout(r, 400));
+    }
+  } finally {
+    genPolling = false;
+  }
+}
+
+/** 校验 → generate → 进入审阅；mode=resume|regenerate */
+async function openDataset(root, {fromBoot=false, jsons_dirname=null, images_dirname=null, geometry=null, mode='resume'} = {}){
+  if (!root) return false;
+  const jsons = jsons_dirname || selectedJsons || 'jsons';
+  const imgs = images_dirname || selectedImages || 'images';
+  const genMode = (mode === 'regenerate') ? 'regenerate' : 'resume';
+  if (geometry) setGeometry(geometry);
+  setStatus('校验数据集…');
+  setGenChip('running', 'validating');
+  showGenModal(genMode === 'regenerate'
+    ? '正在重新生成标签描述和 caption...'
+    : '正在生成标签描述和caption...');
+  appendGenLog([
+    `dataset: ${root}`,
+    `images: ${imgs}`,
+    `jsons: ${jsons}`,
+    `geometry: ${labelGeometry || '?'}`,
+    `mode: ${genMode}`,
+    'validating…',
+  ]);
+  renderProgress([
+    {id:'validate', label:'数据集校验', status:'running'},
+    {id:'crop', label:'裁剪目标 (crop)', status:'pending'},
+    {id:'describe', label:'标签描述 (describe)', status:'pending'},
+    {id:'caption', label:'生成 caption', status:'pending'},
+    {id:'done', label:'完成', status:'pending'},
+  ]);
+
+  const start = await api('/api/generate/start', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      dataset_root: root,
+      images_dirname: imgs,
+      jsons_dirname: jsons,
+      geometry: geometry || labelGeometry || undefined,
+      mode: genMode,
+      force: genMode === 'regenerate',
+      rules_scene: rulesScene,
+    })
+  });
+
+  if (start.progress) renderProgress(start.progress);
+
+  if (start.validation && start.validation.ok === false){
+    document.getElementById('gen-modal-title').textContent = '校验失败';
+    const box = document.getElementById('gen-errors');
+    box.style.display = 'block';
+    box.innerHTML = (start.validation.errors || []).map(e => `<li>${escHtml(e)}</li>`).join('');
+    document.getElementById('btn-gen-close').style.display = '';
+    setGenChip('error', 'invalid');
+    setStatus('校验失败');
+    alert(formatValidationErrors(start.validation));
+    return false;
+  }
+  if (start.error && start.status === 'error'){
+    document.getElementById('gen-modal-title').textContent = '启动失败';
+    const box = document.getElementById('gen-errors');
+    box.style.display = 'block';
+    box.innerHTML = `<li>${escHtml(start.error)}</li>`;
+    document.getElementById('btn-gen-close').style.display = '';
+    setGenChip('error', 'error');
+    alert(start.error);
+    return false;
+  }
+
+  document.getElementById('dir-chip').textContent = root;
+  setPathChip(start.images_dirname || imgs, start.jsons_dirname || jsons);
+  const geom = (start.validation && start.validation.geometry) || start.geometry || labelGeometry;
+  if (geom) setGeometry(geom);
+  if (start.status === 'ready'){
+    document.getElementById('gen-modal-title').textContent = 'draft 已完整，跳过 vLLM';
+    renderProgress(start.progress || []);
+    appendGenLog([...(start.assessment ? [`assess ready: ${JSON.stringify(start.assessment)}`] : []),
+                  geom ? `geometry=${geom}` : '', 'draft 已完整，无需 vLLM ✅']);
+    setGenChip('ready', geom ? `ready:${geom}` : 'ready');
+    // 短暂展示进度再关
+    await new Promise(r => setTimeout(r, 600));
+    closeGenModal();
+  } else {
+    const stages = (start.assessment && start.assessment.stages) || [];
+    const needLlm = stages.some(s => s === 'describe' || s === 'caption');
+    document.getElementById('gen-modal-title').textContent = needLlm
+      ? '正在生成标签描述和caption...'
+      : '正在补全 draft（无需 vLLM）...';
+    const ok = await pollGenerateUntilDone();
+    if (!ok) return false;
+    closeGenModal();
+    setGenChip('done', geom ? `done:${geom}` : 'done');
+  }
+
+  await reloadImages();
+  if (images.length){
+    if (!fromBoot || !curStem) await loadStem(images[0].stem);
+  } else {
+    setStatus('无 draft/objects，请检查生成结果');
+  }
+  return true;
+}
+
+function openDescribeGenModal(){
+  const root = document.getElementById('dir-chip').textContent;
+  if (!root || root === '未选择'){
+    alert('请先选择图像数据集');
+    return;
+  }
+  if (!selectedJsons){
+    alert('请先完成两步选择（图像 + 标签）');
+    openBrowser();
+    return;
+  }
+  document.getElementById('describe-gen-modal').classList.add('show');
+}
+function closeDescribeGenModal(){
+  document.getElementById('describe-gen-modal').classList.remove('show');
+}
+
+async function confirmDescribeGen(mode){
+  const root = document.getElementById('dir-chip').textContent;
+  if (!root || root === '未选择'){
+    alert('请先选择图像数据集');
+    return;
+  }
+  const isRegen = mode === 'regenerate';
+  const ok = confirm(
+    isRegen
+      ? '确认「重新生成」？\n将强制重跑 describe + caption，并覆盖已有描述与 caption。'
+      : '确认「续跑补齐」？\n仅补齐缺失阶段，不覆盖已有结果。'
+  );
+  if (!ok) return;
+  closeDescribeGenModal();
+  await saveIfDirty();
+  await openDataset(root, {
+    images_dirname: selectedImages,
+    jsons_dirname: selectedJsons,
+    geometry: labelGeometry,
+    mode: isRegen ? 'regenerate' : 'resume',
+  });
+}
+
+/** @deprecated 兼容旧入口 */
+async function manualResumeGenerate(){
+  openDescribeGenModal();
+}
+
+function currentImageIndex(){
+  return images.findIndex(img => img.stem === curStem);
+}
+
+function updateProgress(){
+  const el = document.getElementById('progress-badge');
+  if (!el) return;
+  const n = images.length;
+  const i = currentImageIndex();
+  el.textContent = n ? `${i >= 0 ? i + 1 : 0}/${n}` : '0/0';
+}
+
+async function reloadImages(){
+  images = await api('/api/images');
+  const sb = document.getElementById('file-list');
+  sb.innerHTML = '';
+  images.forEach(img => {
+    const d = document.createElement('div');
+    d.className = 'img-item' + (img.exported ? ' exported' : '') + (img.stem===curStem?' active':'');
+    d.innerHTML = `<div><span class="dot"></span>${img.stem}</div><div class="meta">${img.n_captions} captions${img.exported?' · exported':''}</div>`;
+    d.onclick = () => loadStem(img.stem);
+    sb.appendChild(d);
+  });
+  updateProgress();
+}
+
+async function navImage(delta){
+  if (!images.length) return;
+  let i = currentImageIndex();
+  if (i < 0) i = 0;
+  else i = Math.max(0, Math.min(images.length - 1, i + delta));
+  if (images[i].stem !== curStem) await loadStem(images[i].stem);
+}
+
+function needsZh(it){
+  const caps = (it.captions && it.captions.captions) || [];
+  if (caps.some(c => !c.zh)) return true;
+  const active = caps[activeCap];
+  const ids = (active && active.obj_ids) || [];
+  return ids.some(oid => {
+    const d = it.descriptions[String(oid)] || {};
+    const phrases = d.phrases || [];
+    const zh = d.zh || [];
+    return phrases.length && (zh.length !== phrases.length || zh.some(z => !z));
+  });
+}
+
+function usedPhraseSets(cap){
+  const m = {};
+  (cap && cap.phrases || []).forEach(p => {
+    if (!p || !p.phrase) return;
+    if (!m[p.obj_id]) m[p.obj_id] = new Set();
+    m[p.obj_id].add(p.phrase);
+  });
+  return m;
+}
+
+function stripPhraseFromCaption(caption, phrase){
+  if (!caption || !phrase) return caption || '';
+  let text = caption.split(phrase).join(' ');
+  text = text.replace(/\s+/g, ' ').replace(/\s+,/g, ',').replace(/,\s*,/g, ',');
+  text = text.replace(/\s+\./g, '.').trim();
+  text = text.replace(/^[,.\s]+|[,.\s]+$/g, '').trim();
+  if (!text) return '';
+  if (!/[.!?]$/.test(text)) text += '.';
+  return text;
+}
+
+function appendPhraseToCaption(caption, phrase){
+  const p = (phrase || '').trim();
+  if (!p) return caption || '';
+  let c = (caption || '').trim();
+  if (!c) return `There is a ${p} in the scene.`;
+  if (c.includes(p)) return c;
+  c = c.replace(/[.!?]\s*$/, '').trim();
+  return `${c}, with ${p}.`;
+}
+
+function syncPhraseTokens(cap){
+  const caption = cap.caption || '';
+  (cap.phrases || []).forEach(ph => {
+    const p = ph.phrase || '';
+    const idx = caption.indexOf(p);
+    ph.tokens_positive = idx >= 0 ? [idx, idx + p.length] : null;
+  });
+}
+
+async function toggleObjPhrase(oid, phraseIdx){
+  if (!item) return;
+  const caps = item.captions.captions || [];
+  const active = caps[activeCap];
+  if (!active) return;
+  const desc = item.descriptions[String(oid)] || {};
+  const phrases = desc.phrases || [];
+  const phrase = (phrases[phraseIdx] || '').trim();
+  if (!phrase) return;
+
+  active.phrases = active.phrases || [];
+  active.obj_ids = active.obj_ids || [];
+  const already = active.phrases.some(p => p.obj_id === oid && p.phrase === phrase);
+
+  // 取消=仅从 caption.phrases 去掉选用；obj_ids / descriptions 一律不动
+  // （删目标只能点红色「删除」）
+  if (already){
+    active.phrases = active.phrases.filter(p => !(p.obj_id === oid && p.phrase === phrase));
+    active.caption = stripPhraseFromCaption(active.caption, phrase);
+    setStatus(`取消选用: ${phrase} · 刷新 caption…`);
+  } else {
+    if (!active.obj_ids.includes(oid)) active.obj_ids.push(oid);
+    active.phrases.push({ obj_id: oid, phrase, tokens_positive: null });
+    active.caption = appendPhraseToCaption(active.caption, phrase);
+    setStatus(`选中: ${phrase} · 刷新 caption…`);
+  }
+  // 防御：确保当前目标仍在关联列表（避免历史逻辑误删后卡片消失）
+  if (!active.obj_ids.includes(oid)) active.obj_ids.push(oid);
+  syncPhraseTokens(active);
+  markDirty();
+  renderAll();
+
+  const ok = await saveIfDirty();
+  if (!ok) return;
+  if (!curStem) return;
+
+  // 一个都没选：只保存空选用，绝不触发会重抽/删除的逻辑
+  if (!(active.phrases && active.phrases.length)){
+    try {
+      const tr = await api('/api/translate', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({text: active.caption || ''}),
+      });
+      active.zh = tr.zh || '';
+    } catch (_) {}
+    markDirty();
+    await saveIfDirty();
+    renderAll();
+    setStatus(`已取消选用: ${phrase}（目标仍保留，删除请点「删除」）`);
+    return;
+  }
+
+  const res = await api(
+    `/api/refresh_caption/${encodeURIComponent(curStem)}/${activeCap}`,
+    {method:'POST'}
+  );
+  if (res.error){
+    alert('caption 自动刷新失败：\n' + res.error);
+    setStatus((already ? '取消选用' : '选中') + `: ${phrase} · caption 刷新失败`);
+    return;
+  }
+  item.captions = res.captions;
+  dirty = false;
+  renderAll();
+  ensureZhAsync(curStem);
+  setStatus((already ? '已取消选用' : '选中') + `: ${phrase} · caption 已刷新`);
+}
+
+function mergeDescriptionsFromServer(serverDescs){
+  if (!serverDescs) return;
+  if (!item.descriptions) item.descriptions = {};
+  for (const [k, d] of Object.entries(serverDescs)){
+    const local = item.descriptions[k];
+    const recently = refreshedDescAt[k] && (Date.now() - refreshedDescAt[k] < 120000);
+    if (recently && local){
+      const lp = JSON.stringify(local.phrases || []);
+      const sp = JSON.stringify((d && d.phrases) || []);
+      if (lp === sp) item.descriptions[k] = d;
+      continue;
+    }
+    if (!local){
+      item.descriptions[k] = d;
+      continue;
+    }
+    const lp = JSON.stringify(local.phrases || []);
+    const sp = JSON.stringify((d && d.phrases) || []);
+    if (lp !== sp) continue;
+    item.descriptions[k] = d;
+  }
+}
+
+async function ensureZhAsync(stem){
+  // 不互斥阻塞：切图后用序号丢弃旧请求，优先当前图
+  const seq = ++zhSeq;
+  const stillMe = () => seq === zhSeq && curStem === stem && item;
+  const postZh = (mode) => {
+    const active = (item.captions.captions || [])[activeCap] || {};
+    return api('/api/ensure_zh/' + encodeURIComponent(stem), {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({obj_ids: active.obj_ids || [], mode}),
+    });
+  };
+  try {
+    setStatus(stem + ' · 翻译 caption…');
+    const r1 = await postZh('captions');
+    if (!stillMe()) return;
+    if (r1.error){
+      setStatus(stem + ' · 翻译失败: ' + (r1.error || ''));
+      return;
+    }
+    item.captions = r1.captions;
+    mergeDescriptionsFromServer(r1.descriptions);
+    renderAll();
+    setStatus(stem + ' · 翻译目标描述…');
+    const r2 = await postZh('descs');
+    if (!stillMe()) return;
+    if (r2.error){
+      setStatus(stem + ' · 短语翻译失败: ' + (r2.error || ''));
+      return;
+    }
+    item.captions = r2.captions;
+    mergeDescriptionsFromServer(r2.descriptions);
+    renderAll();
+    setStatus(stem);
+  } catch (e) {
+    if (stillMe()) setStatus(stem + ' · 翻译异常');
+  }
+}
+
+async function saveIfDirty(){
+  if (!dirty || !item || !curStem) return true;
+  setStatus('自动保存中…');
+  const res = await api('/api/save/' + encodeURIComponent(curStem), {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({captions: item.captions, descriptions: item.descriptions})
+  });
+  if (res.error){
+    alert('自动保存失败，已取消切换：\n' + res.error);
+    setStatus('自动保存失败');
+    return false;
+  }
+  dirty = false;
+  setStatus('已自动保存');
+  return true;
+}
+
+async function loadStem(stem){
+  if (stem !== curStem){
+    const ok = await saveIfDirty();
+    if (!ok) return;
+  }
+  curStem = stem;
+  dirty = false;
+  highlightObjId = null;
+  zhSeq++;  // 作废上一张图未完成的翻译
+  setStatus('加载中...');
+  item = await api('/api/item/' + encodeURIComponent(stem));
+  if (item.error){ alert(item.error); return; }
+  activeCap = 0;
+  fitMode = 'full';
+  viewManual = false;
+  const img = document.getElementById('main-img');
+  img.onload = () => {
+    naturalW = img.naturalWidth; naturalH = img.naturalHeight;
+    const canvas = document.getElementById('overlay');
+    canvas.width = naturalW; canvas.height = naturalH;
+    renderAll();
+  };
+  img.src = '/api/image/' + encodeURIComponent(stem) + '?t=' + Date.now();
+  renderAll();
+  await reloadImages();
+  updateProgress();
+  setStatus(stem);
+  if (needsZh(item)) ensureZhAsync(stem);
+}
+
+async function selectCap(i){
+  if (i === activeCap) return;
+  const ok = await saveIfDirty();
+  if (!ok) return;
+  activeCap = i;
+  highlightObjId = null;
+  renderAll();
+  if (item && needsZh(item)) ensureZhAsync(curStem);
+}
+
+async function navCaption(delta){
+  const caps = (item && item.captions && item.captions.captions) || [];
+  if (caps.length < 2) return;
+  // 到头/到尾不再循环，避免检验人员误以为还能继续切而重复校验
+  const next = Math.max(0, Math.min(caps.length - 1, activeCap + delta));
+  if (next === activeCap) return;
+  await selectCap(next);
+}
+
+function updateCapTabHint(nCaps){
+  const el = document.getElementById('cap-tab-hint');
+  if (!el) return;
+  if (!nCaps){
+    el.textContent = 'W/S 切 caption';
+    el.classList.remove('warn');
+    return;
+  }
+  el.textContent = `共 ${nCaps} 条 · 当前 ${activeCap + 1}/${nCaps} · W/S 切换`;
+  el.classList.toggle('warn', nCaps > 1);
+  el.title = nCaps > 1
+    ? `还有 ${nCaps - 1} 条 caption 未在当前页，请用 W/S 或点击标签页检查`
+    : '当前仅 1 条 caption';
+}
+
+function renderAll(){
+  renderCaptions();
+  renderObjects();
+  applyView();
+}
+
+function renderCaptions(){
+  const caps = (item && item.captions && item.captions.captions) || [];
+  const tabList = document.getElementById('cap-tab-list');
+  const sheet = document.getElementById('cap-sheet');
+  tabList.innerHTML = '';
+  sheet.innerHTML = '';
+
+  if (!caps.length){
+    sheet.innerHTML = '<div id="cap-empty">暂无 caption，请先生成或选择图像</div>';
+    document.getElementById('cap-hint').textContent =
+      'A/D 切图 · W/S 切 caption · 切图/切 caption 自动保存';
+    updateCapTabHint(0);
+    return;
+  }
+  if (activeCap >= caps.length) activeCap = 0;
+
+  caps.forEach((c, i) => {
+    const tab = document.createElement('div');
+    tab.className = 'cap-tab' + (i === activeCap ? ' active' : '');
+    tab.textContent = 'captions' + (i + 1);
+    tab.title = (c.strategy || '') + (c.grid_cell != null ? ` · cell ${c.grid_cell}` : '');
+    tab.onclick = () => selectCap(i);
+    tabList.appendChild(tab);
+  });
+  updateCapTabHint(caps.length);
+
+  const c = caps[activeCap];
+  const entries = activePhraseEntries(c);
+  const zhShow = c.zh ? c.zh : '（翻译中…）';
+  const multiHint = caps.length > 1
+    ? `<span style="color:#fbbf24">共 ${caps.length} 条 caption · W↑ / S↓ 切换，勿漏检</span>`
+    : `<span style="color:#64748b">悬停同步中英高亮 · 点击高亮图中目标 · 也可点图中框</span>`;
+  sheet.innerHTML = `
+    <div class="cap-meta">
+      <span>#${activeCap} · ${escHtml(c.strategy || '')}</span>
+      <span>cell ${escHtml(String(c.grid_cell ?? ''))}</span>
+      <span>objs: ${escHtml((c.obj_ids || []).join(', '))}</span>
+      ${multiHint}
+    </div>
+    <div class="cap-block">
+      <div class="cap-label">中文</div>
+      <div class="cap-text" id="cap-zh">${highlightPhrases(zhShow, entries, 'zh')}</div>
+    </div>
+    <div class="cap-block">
+      <div class="cap-label">EN（目标描述高亮，可编辑；点击高亮可点）</div>
+      <div class="cap-text" id="cap-en-view">${highlightPhrases(c.caption || '', entries, 'en')}</div>
+      <textarea class="cap-en-edit" id="cap-en-edit" style="margin-top:6px">${escHtml(c.caption || '')}</textarea>
+    </div>`;
+
+  const ta = document.getElementById('cap-en-edit');
+  ta.oninput = () => {
+    c.caption = ta.value;
+    (c.phrases || []).forEach(ph => {
+      const p = ph.phrase || '';
+      const idx = c.caption.indexOf(p);
+      ph.tokens_positive = idx >= 0 ? [idx, idx + p.length] : null;
+    });
+    const ents = activePhraseEntries(c);
+    document.getElementById('cap-en-view').innerHTML = highlightPhrases(c.caption, ents, 'en');
+    bindCapPhraseInteractions();
+    markDirty();
+  };
+  ta.onchange = async () => {
+    c.caption = ta.value;
+    markDirty();
+    const res = await api('/api/translate', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({text: c.caption})
+    });
+    c.zh = res.zh || '';
+    const ents = activePhraseEntries(c);
+    document.getElementById('cap-zh').innerHTML = highlightPhrases(c.zh || '（暂无）', ents, 'zh');
+    document.getElementById('cap-en-view').innerHTML = highlightPhrases(c.caption, ents, 'en');
+    bindCapPhraseInteractions();
+  };
+
+  bindCapPhraseInteractions();
+  document.getElementById('cap-hint').textContent =
+    `captions${activeCap + 1}/${caps.length} · A/D 切图 · W/S 切 caption · 自动保存已开`;
+}
+
+function renderObjects(){
+  const objList = document.getElementById('obj-list');
+  objList.innerHTML = '';
+  if (!item) return;
+  const caps = item.captions.captions || [];
+  const active = caps[activeCap];
+  if (!active){
+    objList.innerHTML = '<div id="empty-obj">请在下方选择一条 caption，或点「新增」</div>';
+    return;
+  }
+  const focusIds = rightPanelObjIds(active);
+  const used = usedPhraseSets(active);
+  if (!focusIds.length){
+    objList.innerHTML = '<div id="empty-obj">该 caption 没有关联目标</div>';
+    return;
+  }
+  focusIds.forEach(oid => {
+    const obj = (item.meta.objects || []).find(o => o.obj_id === oid);
+    if (!obj) return;
+    const desc = item.descriptions[String(oid)] || {phrases:[], zh:[], label: obj.label};
+    const phrases = desc.phrases || [];
+    const zhList = desc.zh || [];
+    const usedSet = used[oid] || new Set();
+    const card = document.createElement('div');
+    card.className = 'obj-card active' + (highlightObjId === oid ? ' focus' : '');
+    card.title = '点击高亮图中目标';
+    const chips = phrases.length
+      ? phrases.map((ph, i) => {
+          const label = (zhList[i] && String(zhList[i]).trim()) ? zhList[i] : (ph || '（空）');
+          const sel = usedSet.has(ph) ? ' selected' : '';
+          return `<button type="button" class="phrase-chip${sel}" data-idx="${i}" title="${escHtml(ph)}">${escHtml(label)}</button>`;
+        }).join('')
+      : '<span style="color:#64748b;font-size:12px">暂无描述</span>';
+    card.innerHTML = `
+      <img class="obj-thumb" src="/api/crop/${encodeURIComponent(curStem)}/${oid}" alt="obj${oid}">
+      <div class="obj-body">
+        <div class="title"><span>obj ${oid} · ${escHtml(obj.label)}</span>
+          <div class="row">
+            <button class="btn btn-outline btn-sm refresh-btn" title="仅刷新该目标描述">刷新</button>
+            <button class="btn btn-outline-danger btn-sm del-btn" title="删除该目标框">删除</button>
+          </div>
+        </div>
+        <div class="phrase-list">${chips}</div>
+      </div>`;
+    card.onclick = (ev) => {
+      if (ev.target.closest('button')) return;
+      setHighlightObj(oid, {toggle: true});
+    };
+    card.querySelector('.refresh-btn').onclick = async () => {
+      const key = String(oid);
+      const prev = item.descriptions[key] ? JSON.parse(JSON.stringify(item.descriptions[key])) : null;
+      setStatus(`刷新 obj ${oid} 描述…`);
+      const res = await api(`/api/refresh_desc/${encodeURIComponent(curStem)}/${oid}`, {method:'POST'});
+      if (res.error){
+        alert('刷新失败，已保留原描述：\n' + res.error);
+        if (prev) item.descriptions[key] = prev;
+        renderObjects();
+        setStatus(`obj ${oid} 刷新失败`);
+        return;
+      }
+      const desc = res.description || {};
+      const newPhrases = (desc.phrases || []).map(p => String(p || '').trim()).filter(Boolean);
+      if (!newPhrases.length){
+        alert('刷新失败：未返回有效描述，已保留原描述');
+        if (prev) item.descriptions[key] = prev;
+        renderObjects();
+        setStatus(`obj ${oid} 刷新未生效`);
+        return;
+      }
+      item.descriptions[key] = desc;
+      refreshedDescAt[key] = Date.now();
+      markDirty();
+      renderObjects();
+      setStatus(`obj ${oid} 描述已刷新（${newPhrases.length} 条）`);
+    };
+    card.querySelector('.del-btn').onclick = () => deleteObject(oid, obj.label);
+    card.querySelectorAll('.phrase-chip').forEach(chip => {
+      chip.onclick = (ev) => {
+        ev.stopPropagation();
+        toggleObjPhrase(oid, parseInt(chip.dataset.idx, 10));
+      };
+    });
+    objList.appendChild(card);
+  });
+}
+
+async function refreshActiveCaption(){
+  if (!curStem) return;
+  await saveIfDirty();
+  const caps = (item && item.captions && item.captions.captions) || [];
+  if (!caps.length) return;
+  setStatus(`刷新 captions${activeCap + 1}…`);
+  const res = await api(`/api/refresh_caption/${encodeURIComponent(curStem)}/${activeCap}`, {method:'POST'});
+  if (res.error){ alert(res.error); return; }
+  item.captions = res.captions;
+  dirty = false;
+  renderAll();
+  ensureZhAsync(curStem);
+  setStatus(`captions${activeCap + 1} 已刷新`);
+}
+
+async function addCaption(){
+  if (!curStem) return;
+  await saveIfDirty();
+  setStatus('新增 caption（优先未覆盖目标）…');
+  const res = await api(`/api/add_caption/${encodeURIComponent(curStem)}`, {method:'POST'});
+  if (res.error){ alert(res.error); return; }
+  item.captions = res.captions;
+  dirty = false;
+  activeCap = (typeof res.sentence_id === 'number')
+    ? res.sentence_id
+    : Math.max(0, ((item.captions.captions || []).length - 1));
+  renderAll();
+  await reloadImages();
+  ensureZhAsync(curStem);
+  setStatus(`已新增 captions${activeCap + 1}`);
+}
+
+async function deleteActiveCaption(){
+  if (!curStem || !item) return;
+  const caps = (item.captions && item.captions.captions) || [];
+  if (!caps.length) return;
+  const name = `captions${activeCap + 1}`;
+  if (!confirm(`确认删除 ${name}？\n此操作会从 draft 中移除该条 caption。`)) return;
+  await saveIfDirty();
+  setStatus(`删除 ${name}…`);
+  const res = await api(`/api/delete_caption/${encodeURIComponent(curStem)}/${activeCap}`, {method:'POST'});
+  if (res.error){ alert(res.error); return; }
+  item.captions = res.captions;
+  dirty = false;
+  const n = (item.captions.captions || []).length;
+  activeCap = Math.max(0, Math.min(activeCap, n - 1));
+  renderAll();
+  await reloadImages();
+  setStatus(n ? `${name} 已删除` : '全部 caption 已删空');
+}
+
+async function deleteObject(oid, label){
+  if (!curStem || !item) return;
+  const tip = label ? `obj ${oid}（${label}）` : `obj ${oid}`;
+  if (!confirm(
+    `确认删除目标框 ${tip}？\n\n将从本图移除该框，并同步清理所有 caption 中对该目标的引用。\n此操作不可撤销。`
+  )) return;
+  await saveIfDirty();
+  setStatus(`删除 ${tip}…`);
+  const res = await api(`/api/delete_object/${encodeURIComponent(curStem)}/${oid}`, {method:'POST'});
+  if (res.error){ alert(res.error); return; }
+  item.meta = res.meta;
+  item.captions = res.captions;
+  item.descriptions = res.descriptions;
+  dirty = false;
+  if (highlightObjId === oid) highlightObjId = null;
+  const caps = (item.captions && item.captions.captions) || [];
+  if (activeCap >= caps.length) activeCap = Math.max(0, caps.length - 1);
+  renderAll();
+
+  // 删除目标 = 更新了描述选用，对仍有短语的 caption 自动重写
+  const toRefresh = [];
+  for (let i = 0; i < caps.length; i++){
+    if ((caps[i].phrases || []).length) toRefresh.push(i);
+  }
+  if (toRefresh.length){
+    setStatus(`${tip} 已删除 · 刷新 caption…`);
+    let lastErr = null;
+    for (const ci of toRefresh){
+      const r = await api(
+        `/api/refresh_caption/${encodeURIComponent(curStem)}/${ci}`,
+        {method:'POST'}
+      );
+      if (r.error){ lastErr = r.error; continue; }
+      item.captions = r.captions;
+      dirty = false;
+    }
+    renderAll();
+    if (lastErr){
+      alert('部分 caption 自动刷新失败：\n' + lastErr);
+      setStatus(`${tip} 已删除 · caption 刷新有失败`);
+      return;
+    }
+  }
+  ensureZhAsync(curStem);
+  setStatus(
+    toRefresh.length
+      ? `${tip} 已删除 · caption 已刷新`
+      : `${tip} 已删除`
+  );
+}
+
+function setFitMode(m){
+  fitMode = m;
+  viewManual = false;
+  syncFitButtons();
+  applyView();
+}
+
+function toggleBoxes(){
+  showBoxes = !showBoxes;
+  syncAnnoButton();
+  applyView();
+}
+
+function pointInPoly(x, y, flat){
+  if (!flat || flat.length < 6) return false;
+  let inside = false;
+  for (let i = 0, j = flat.length - 2; i < flat.length; i += 2){
+    const xi = flat[i], yi = flat[i + 1];
+    const xj = flat[j], yj = flat[j + 1];
+    const intersect = ((yi > y) !== (yj > y)) &&
+      (x < (xj - xi) * (y - yi) / ((yj - yi) || 1e-12) + xi);
+    if (intersect) inside = !inside;
+    j = i;
+  }
+  return inside;
+}
+
+/** 图像坐标 hit-test（仅显示标注时）；重叠取面积更小者 */
+function hitTestObj(imgX, imgY){
+  if (!showBoxes || !item) return null;
+  const boxes = activeBoxes();
+  if (!boxes.length) return null;
+  const preferPoly = labelGeometry === 'polygon'
+    || selectedJsons === 'jsons-segm' || selectedJsons === 'jsons-sem';
+  const preferRect = labelGeometry === 'rectangle' || selectedJsons === 'jsons-det'
+    || selectedJsons === 'annotations' || selectedJsons === 'xmls' || selectedJsons === 'voc';
+  let best = null;
+  let bestArea = Infinity;
+  for (const o of boxes){
+    const st = (o.shape_type || '').toLowerCase();
+    const poly = polyFlatOf(o);
+    const drawPoly = preferPoly || (!preferRect && (st === 'polygon' || (!st && poly)));
+    let hit = false;
+    let area = Infinity;
+    if (drawPoly && poly){
+      hit = pointInPoly(imgX, imgY, poly);
+      if (hit && o.bbox_xyxy){
+        const [x1, y1, x2, y2] = o.bbox_xyxy;
+        area = Math.max(1, (x2 - x1) * (y2 - y1));
+      } else if (hit) area = poly.length;
+    } else if (o.bbox_xyxy){
+      const [x1, y1, x2, y2] = o.bbox_xyxy;
+      hit = imgX >= x1 && imgX <= x2 && imgY >= y1 && imgY <= y2;
+      area = Math.max(1, (x2 - x1) * (y2 - y1));
+    }
+    if (hit && area <= bestArea){
+      bestArea = area;
+      best = o.obj_id;
+    }
+  }
+  return best;
+}
+
+function syncFitButtons(){
+  const bf = document.getElementById('btn-fit-full');
+  const bz = document.getElementById('btn-fit-zoom');
+  if (bf) bf.classList.toggle('on', !viewManual && fitMode === 'full');
+  if (bz) bz.classList.toggle('on', !viewManual && fitMode === 'zoom');
+}
+
+function activeBoxes(){
+  if (!item) return [];
+  const caps = item.captions.captions || [];
+  const active = caps[activeCap];
+  if (!active) return [];
+  const ids = new Set(active.obj_ids || []);
+  return (item.meta.objects || []).filter(o => ids.has(o.obj_id));
+}
+
+function applyStageTransform(){
+  const stage = document.getElementById('stage');
+  stage.style.transform = `translate(${viewTx}px, ${viewTy}px) scale(${viewScale})`;
+  document.getElementById('main-img').style.width = naturalW + 'px';
+}
+
+function computeFitTransform(){
+  const wrap = document.getElementById('canvas-wrap');
+  const boxes = activeBoxes();
+  let vx=0, vy=0, vw=naturalW, vh=naturalH;
+  if (fitMode === 'zoom' && boxes.length){
+    let x1=Infinity,y1=Infinity,x2=-Infinity,y2=-Infinity;
+    boxes.forEach(o => {
+      x1=Math.min(x1,o.bbox_xyxy[0]); y1=Math.min(y1,o.bbox_xyxy[1]);
+      x2=Math.max(x2,o.bbox_xyxy[2]); y2=Math.max(y2,o.bbox_xyxy[3]);
+    });
+    const pad = Math.max(40, 0.15*Math.max(x2-x1,y2-y1));
+    vx = Math.max(0, x1-pad); vy = Math.max(0, y1-pad);
+    vw = Math.min(naturalW, x2+pad) - vx;
+    vh = Math.min(naturalH, y2+pad) - vy;
+  }
+  const scale = Math.min(
+    wrap.clientWidth / Math.max(vw, 1),
+    wrap.clientHeight / Math.max(vh, 1)
+  );
+  const usedW = vw * scale, usedH = vh * scale;
+  viewScale = scale;
+  viewTx = -vx * scale + (wrap.clientWidth - usedW) / 2;
+  viewTy = -vy * scale + (wrap.clientHeight - usedH) / 2;
+}
+
+function polyFlatOf(o){
+  if (o.polygon && o.polygon.length >= 6) return o.polygon;
+  if (o.segmentation && o.segmentation.length >= 6) return o.segmentation;
+  if (Array.isArray(o.points) && o.points.length >= 3){
+    const flat = [];
+    o.points.forEach(p => {
+      if (Array.isArray(p) && p.length >= 2) flat.push(+p[0], +p[1]);
+    });
+    return flat.length >= 6 ? flat : null;
+  }
+  return null;
+}
+
+function drawBoxes(){
+  const canvas = document.getElementById('overlay');
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  // 隐藏标签时仍允许「点击词条高亮」单独画出该目标
+  if (!showBoxes && highlightObjId == null){
+    syncAnnoButton();
+    return;
+  }
+  const boxes = showBoxes ? activeBoxes() : [];
+  const preferPoly = labelGeometry === 'polygon'
+    || selectedJsons === 'jsons-segm' || selectedJsons === 'jsons-sem';
+  const preferRect = labelGeometry === 'rectangle' || selectedJsons === 'jsons-det'
+    || selectedJsons === 'annotations' || selectedJsons === 'xmls' || selectedJsons === 'voc';
+  const lw = Math.max(1, naturalW / 700);
+
+  // 高亮目标始终可画（不受 showBoxes / active caption 过滤限制）
+  let drawList = boxes.slice();
+  if (highlightObjId != null && item){
+    const hiObj = (item.meta.objects || []).find(o => o.obj_id === highlightObjId);
+    if (hiObj && !drawList.some(o => o.obj_id === highlightObjId)) drawList.push(hiObj);
+  }
+  // 高亮目标最后画，压在其它框上面
+  const ordered = drawList.sort((a, b) => {
+    const ah = a.obj_id === highlightObjId ? 1 : 0;
+    const bh = b.obj_id === highlightObjId ? 1 : 0;
+    return ah - bh;
+  });
+
+  ordered.forEach(o => {
+    const hi = highlightObjId != null && o.obj_id === highlightObjId;
+    // 隐藏标签时只画高亮框
+    if (!showBoxes && !hi) return;
+    const st = (o.shape_type || '').toLowerCase();
+    const poly = polyFlatOf(o);
+    const drawPoly = preferPoly || (!preferRect && (st === 'polygon' || (!st && poly)));
+    const stroke = hi ? '#fbbf24' : (drawPoly ? '#22c55e' : '#7c86f5');
+    const fill = hi ? '#fbbf2444' : '#22c55e33';
+    const width = hi ? lw * 2.2 : lw;
+    if (drawPoly && poly){
+      ctx.beginPath();
+      ctx.moveTo(poly[0], poly[1]);
+      for (let i = 2; i < poly.length; i += 2) ctx.lineTo(poly[i], poly[i + 1]);
+      ctx.closePath();
+      ctx.fillStyle = fill;
+      ctx.fill();
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = width;
+      ctx.stroke();
+    } else if (o.bbox_xyxy){
+      const [x1, y1, x2, y2] = o.bbox_xyxy;
+      if (hi){
+        ctx.fillStyle = '#fbbf2422';
+        ctx.fillRect(x1, y1, x2 - x1, y2 - y1);
+      }
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = width;
+      ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+    }
+    if (hi){
+      const label = `obj ${o.obj_id}`;
+      const tx = (o.bbox_xyxy ? o.bbox_xyxy[0] : (poly ? poly[0] : 8));
+      const ty = (o.bbox_xyxy ? o.bbox_xyxy[1] : (poly ? poly[1] : 8));
+      ctx.font = `${Math.max(11, Math.round(lw * 5))}px sans-serif`;
+      ctx.fillStyle = '#fbbf24';
+      ctx.fillText(label, tx + 4, Math.max(14, ty - 6));
+    }
+  });
+  syncAnnoButton();
+}
+
+function applyView(){
+  if (!item) return;
+  drawBoxes();
+  if (!viewManual) computeFitTransform();
+  applyStageTransform();
+  syncFitButtons();
+}
+
+function endPan(e){
+  if (!panDrag) return;
+  if (e && panDrag.id != null && e.pointerId !== panDrag.id) return;
+  panDrag = null;
+  const wrap = document.getElementById('canvas-wrap');
+  wrap.classList.remove('panning');
+}
+
+function initViewerControls(){
+  const wrap = document.getElementById('canvas-wrap');
+  wrap.addEventListener('wheel', (e) => {
+    if (!e.ctrlKey && !e.metaKey) return;
+    if (!item) return;
+    e.preventDefault();
+    const rect = wrap.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const imgX = (mx - viewTx) / viewScale;
+    const imgY = (my - viewTy) / viewScale;
+    const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+    const next = Math.min(40, Math.max(0.05, viewScale * factor));
+    viewScale = next;
+    viewTx = mx - imgX * viewScale;
+    viewTy = my - imgY * viewScale;
+    viewManual = true;
+    applyStageTransform();
+    syncFitButtons();
+  }, { passive: false });
+
+  wrap.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || !item) return;
+    if (e.target.closest('button,a,input,textarea')) return;
+    wrap.setPointerCapture(e.pointerId);
+    panDrag = {
+      id: e.pointerId,
+      x: e.clientX, y: e.clientY,
+      tx: viewTx, ty: viewTy,
+      moved: false,
+    };
+  });
+  wrap.addEventListener('pointermove', (e) => {
+    if (!panDrag || e.pointerId !== panDrag.id) return;
+    const dx = e.clientX - panDrag.x;
+    const dy = e.clientY - panDrag.y;
+    const PAN_GAIN = 2.2;
+    if (!panDrag.moved){
+      if (Math.hypot(dx, dy) < 1) return;
+      panDrag.moved = true;
+      wrap.classList.add('panning');
+    }
+    e.preventDefault();
+    viewTx = panDrag.tx + dx * PAN_GAIN;
+    viewTy = panDrag.ty + dy * PAN_GAIN;
+    viewManual = true;
+    applyStageTransform();
+    syncFitButtons();
+  });
+  wrap.addEventListener('pointerup', (e) => {
+    const drag = panDrag;
+    endPan(e);
+    if (!drag || drag.moved || !item) return;
+    if (!showBoxes) return;
+    const rect = wrap.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const imgX = (mx - viewTx) / viewScale;
+    const imgY = (my - viewTy) / viewScale;
+    const oid = hitTestObj(imgX, imgY);
+    if (oid == null) return;
+    setHighlightObj(oid, {toggle: true, fromCanvas: true});
+  });
+  wrap.addEventListener('pointercancel', endPan);
+  wrap.addEventListener('lostpointercapture', endPan);
+
+  document.addEventListener('keydown', (e) => {
+    const tag = (e.target && e.target.tagName || '').toLowerCase();
+    if (tag === 'textarea' || tag === 'input' || (e.target && e.target.isContentEditable)) return;
+    if (e.key === 'a' || e.key === 'A'){ e.preventDefault(); navImage(-1); }
+    else if (e.key === 'd' || e.key === 'D'){ e.preventDefault(); navImage(1); }
+    else if (e.key === 'w' || e.key === 'W'){ e.preventDefault(); navCaption(-1); }
+    else if (e.key === 's' || e.key === 'S'){ e.preventDefault(); navCaption(1); }
+  });
+}
+
+async function saveCurrent(){
+  if (!item || !curStem) return;
+  setStatus('保存中...');
+  const res = await api('/api/save/' + encodeURIComponent(curStem), {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({captions: item.captions, descriptions: item.descriptions})
+  });
+  if (res.error){ alert(res.error); setStatus('保存失败'); return; }
+  dirty = false;
+  setStatus('已保存');
+}
+
+function openExportModal(){
+  if (!curStem){
+    alert('请先打开一张图像');
+    return;
+  }
+  const hint = document.getElementById('export-stem-hint');
+  if (hint) hint.textContent = '当前文件: ' + curStem;
+  document.getElementById('export-modal').classList.add('show');
+}
+function closeExportModal(){
+  document.getElementById('export-modal').classList.remove('show');
+}
+
+async function doExport(scope){
+  if (!curStem && scope === 'current') return;
+  closeExportModal();
+  await saveIfDirty();
+  setStatus(scope === 'all' ? '正在导出整个文件夹…' : '正在导出当前文件…');
+  const res = await api('/api/export', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({scope, stem: curStem}),
+  });
+  if (res.error){ alert(res.error); setStatus('导出失败'); return; }
+  if (scope === 'all'){
+    setStatus(`已导出 ${res.count || 0} 个文件 → ${res.path}`);
+  } else {
+    setStatus('已导出: ' + res.path);
+  }
+  await reloadImages();
+}
+
+/** @deprecated 兼容旧入口 */
+async function exportCurrent(){ openExportModal(); }
+
+window.addEventListener('resize', applyView);
+
+function fillRulesSceneSelect(scenes, current){
+  const sel = document.getElementById('rules-scene');
+  if (!sel) return;
+  const list = scenes || [];
+  sel.innerHTML = list.map(s => {
+    const id = s.id || '';
+    const label = id ? `规则: ${s.label || id}` : '规则: 通用';
+    const miss = (!s.describe_ok || !s.caption_ok) ? ' *' : '';
+    return `<option value="${escHtml(id)}">${escHtml(label)}${miss}</option>`;
+  }).join('');
+  rulesScene = current || '';
+  sel.value = rulesScene;
+}
+
+let modelServices = [];       // [{id,name,base_url,model,ok?}]
+let modelServiceId = '';
+let modelSvcProbeTimer = null;
+let modelSvcMenuBound = false;
+
+function svcOkClass(ok){
+  if (ok === true) return 'ok';
+  if (ok === false) return 'bad';
+  return 'unk';
+}
+
+function svcHoverTip(s){
+  if (!s) return '多模态模型服务（model/server.json）';
+  const lines = [
+    s.name || s.id || '',
+    s.base_url || '',
+    s.model ? `model: ${s.model}` : '',
+    s.ok === true ? '状态: 可用' : (s.ok === false ? '状态: 不可用' : '状态: 未检测'),
+  ].filter(Boolean);
+  return lines.join('\n');
+}
+
+function setModelSvcDot(state, tip){
+  const dot = document.getElementById('model-svc-dot');
+  const btn = document.getElementById('model-svc-btn');
+  if (dot){
+    dot.className = 'svc-dot ' + (state || 'unk');
+  }
+  if (btn && tip) btn.title = tip;
+}
+
+function closeModelSvcMenu(){
+  const wrap = document.getElementById('model-svc-wrap');
+  const btn = document.getElementById('model-svc-btn');
+  if (wrap) wrap.classList.remove('open');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+
+function toggleModelSvcMenu(){
+  const wrap = document.getElementById('model-svc-wrap');
+  const btn = document.getElementById('model-svc-btn');
+  if (!wrap) return;
+  const open = !wrap.classList.contains('open');
+  wrap.classList.toggle('open', open);
+  if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+function bindModelSvcMenuOnce(){
+  if (modelSvcMenuBound) return;
+  modelSvcMenuBound = true;
+  const btn = document.getElementById('model-svc-btn');
+  if (btn){
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      toggleModelSvcMenu();
+    };
+  }
+  document.addEventListener('click', (ev) => {
+    const wrap = document.getElementById('model-svc-wrap');
+    if (!wrap || wrap.contains(ev.target)) return;
+    closeModelSvcMenu();
+  });
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') closeModelSvcMenu();
+  });
+}
+
+function fillModelSvcSelect(services, currentId){
+  bindModelSvcMenuOnce();
+  const menu = document.getElementById('model-svc-menu');
+  const label = document.querySelector('#model-svc-btn .svc-label');
+  if (!menu || !label) return;
+  modelServices = services || [];
+  modelServiceId = currentId || '';
+  if (!modelServiceId || !modelServices.some(s => s.id === modelServiceId)){
+    const def = modelServices.find(s => s.default) || modelServices[0];
+    modelServiceId = def ? def.id : '';
+  }
+
+  if (!modelServices.length){
+    menu.innerHTML = '<div class="model-svc-item"><span class="svc-dot unk"></span><span class="svc-item-text">无服务配置</span></div>';
+    label.textContent = '模型服务';
+    setModelSvcDot('unk', '请编辑 model/server.json');
+    return;
+  }
+
+  menu.innerHTML = modelServices.map(s => {
+    const st = svcOkClass(s.ok);
+    const active = s.id === modelServiceId ? ' active' : '';
+    const def = s.default ? '<span class="svc-item-def">默认</span>' : '';
+    const tip = escHtml(svcHoverTip(s));
+    return `<div class="model-svc-item${active}" data-id="${escHtml(s.id)}" title="${tip}" role="option">` +
+      `<span class="svc-dot ${st}"></span>` +
+      `<span class="svc-item-text">${escHtml(s.name || s.id)}</span>${def}` +
+      `</div>`;
+  }).join('');
+
+  menu.querySelectorAll('.model-svc-item[data-id]').forEach(el => {
+    el.onclick = (ev) => {
+      ev.stopPropagation();
+      const id = el.getAttribute('data-id');
+      closeModelSvcMenu();
+      if (id) onModelSvcChange(id);
+    };
+  });
+
+  syncModelSvcDotFromCache();
+}
+
+function syncModelSvcDotFromCache(){
+  const label = document.querySelector('#model-svc-btn .svc-label');
+  const s = modelServices.find(x => x.id === modelServiceId);
+  if (label) label.textContent = s ? (s.name || s.id) : '模型服务';
+  if (!s){ setModelSvcDot('unk', '未选择'); return; }
+  setModelSvcDot(svcOkClass(s.ok), svcHoverTip(s));
+}
+
+async function probeModelServices(){
+  setModelSvcDot('checking', '正在检测服务…');
+  try {
+    const res = await api('/api/model_services?probe=1');
+    if (res.error){ setModelSvcDot('bad', res.error); return; }
+    const cur = res.service_id || modelServiceId;
+    fillModelSvcSelect(res.services || [], cur);
+  } catch (e) {
+    setModelSvcDot('bad', '探测失败: ' + (e.message || e));
+  }
+}
+
+async function onModelSvcChange(nextId){
+  const next = nextId || modelServiceId;
+  if (!next) return;
+  if (next === modelServiceId){
+    // 仍允许复检，但不必重复 select
+    const s0 = modelServices.find(x => x.id === next);
+    if (s0 && s0.ok != null){ syncModelSvcDotFromCache(); return; }
+  }
+  setModelSvcDot('checking', '切换服务…');
+  const res = await api('/api/model_services/select', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({service_id: next}),
+  });
+  if (res.error){
+    alert(res.error);
+    syncModelSvcDotFromCache();
+    return;
+  }
+  modelServiceId = res.service_id || next;
+  if (res.service){
+    const i = modelServices.findIndex(x => x.id === modelServiceId);
+    if (i >= 0) modelServices[i] = {...modelServices[i], ...res.service};
+    else modelServices.push(res.service);
+  }
+  syncModelSvcDotFromCache();
+  setStatus(`已切换模型: ${res.service && res.service.name || modelServiceId}`);
+  await probeModelServices();
+}
+
+function scheduleModelSvcProbe(){
+  if (modelSvcProbeTimer) clearInterval(modelSvcProbeTimer);
+  modelSvcProbeTimer = setInterval(() => { probeModelServices(); }, 60000);
+}
+
+async function onRulesSceneChange(){
+  const sel = document.getElementById('rules-scene');
+  const next = (sel && sel.value) || '';
+  const res = await api('/api/config', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({rules_scene: next}),
+  });
+  if (res.error){ alert(res.error); return; }
+  rulesScene = (res.config && res.config.rules_scene) || next;
+  const d = (res.config && res.config.describe_rules_path) || '';
+  const c = (res.config && res.config.caption_rules_path) || '';
+  setStatus(`规则场景: ${rulesScene || '通用'} · ${d.split(/[\\/]/).pop() || ''} / ${c.split(/[\\/]/).pop() || ''}`);
+}
+
+(async () => {
+  initResizers();
+  initSideTabs();
+  initViewerControls();
+  syncFitButtons();
+  updateProgress();
+  const cfg = await api('/api/config');
+  nativeFolderPicker = !!cfg.native_folder_picker;
+  fillRulesSceneSelect(cfg.rules_scenes, cfg.rules_scene || '');
+  fillModelSvcSelect(cfg.model_services || [], cfg.service_id || '');
+  probeModelServices();
+  scheduleModelSvcProbe();
+  if (cfg.images_dirname || cfg.jsons_dirname){
+    setPathChip(cfg.images_dirname || selectedImages, cfg.jsons_dirname || selectedJsons);
+  }
+  if (cfg.geometry) setGeometry(cfg.geometry);
+  syncAnnoButton();
+  if (cfg.dataset_root){
+    document.getElementById('dir-chip').textContent = cfg.dataset_root;
+    // 仅当启动参数显式传入数据集时：有 draft 直接进，否则走校验+续跑
+    const images0 = await api('/api/images');
+    if (images0 && images0.length){
+      images = images0;
+      await reloadImages();
+      if (!curStem) await loadStem(images[0].stem);
+      setGenChip('ready', 'ready');
+      syncAnnoButton();
+    } else if (cfg.jsons_dirname) {
+      await openDataset(cfg.dataset_root, {
+        fromBoot: true,
+        images_dirname: cfg.images_dirname || selectedImages,
+        jsons_dirname: cfg.jsons_dirname || selectedJsons,
+        geometry: cfg.geometry || labelGeometry,
+      });
+    }
+  } else {
+    document.getElementById('dir-chip').textContent = '未选择';
+    setStatus('请点击「📁选择图像数据集」');
+    setGenChip('idle', 'idle');
+  }
+})();
+</script>
+</body>
+</html>

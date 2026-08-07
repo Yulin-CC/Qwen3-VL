@@ -1,0 +1,5 @@
+incharge: yulin
+model_vision: Qwen3V-test-v1.0
+data_path: /data/yulin/data/z-qwen
+annotation_path: /data/yulin/data/z-qwen/Qwen_train.jsonl
+vision_instruction: '[无人机] Qwen 测试'
