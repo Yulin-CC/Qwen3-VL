@@ -37,24 +37,41 @@ while [[ "$#" -gt 0 ]]; do
   shift
 done
 
+# 多开：首选端口占用则 PORT+1 ...（不杀已有实例）
+_port_free() {
+  if command -v ss >/dev/null 2>&1; then
+    ! ss -ltn "( sport = :$1 )" 2>/dev/null | grep -q ":$1"
+  else
+    ! fuser "$1/tcp" >/dev/null 2>&1
+  fi
+}
+PREFERRED="$PORT"
+for i in $(seq 0 19); do
+  try=$((PREFERRED + i))
+  if _port_free "$try"; then
+    PORT="$try"
+    break
+  fi
+done
+if [[ "$PORT" != "$PREFERRED" ]]; then
+  echo "  Port ${PREFERRED} busy -> using ${PORT} (multi-instance)"
+fi
+
 echo ""
 echo "  ┌─────────────────────────────────────────────────┐"
 echo "  │   Grounding 检查界面                             │"
 echo "  │   http://localhost:${PORT}                      │"
 echo "  │   dataset: ${DATASET:-（未预设，请在界面选择）}   │"
 echo "  │   ssh -L ${PORT}:localhost:${PORT} user@server  │"
-echo "  │   Ctrl+C / 关终端 → 自动释放端口 ${PORT}         │"
+echo "  │   Ctrl+C / 关终端 → 释放本实例端口 ${PORT}       │"
 echo "  └─────────────────────────────────────────────────┘"
 echo ""
 
-# 退出时释放端口（Ctrl+C、正常结束；强杀终端时由进程组一并结束）
+# 仅释放本实例端口（勿杀其它多开窗口）
 _cleanup_port() {
   fuser -k "${PORT}/tcp" >/dev/null 2>&1 || true
 }
 trap _cleanup_port EXIT INT TERM HUP
-
-# 启动前清掉残留占用
-_cleanup_port
 
 if [[ -n "$DATASET" ]]; then
   python3 util/app.py --port "$PORT" --dataset "$DATASET"

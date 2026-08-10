@@ -18,6 +18,7 @@
 |句式可变|允许调整语序、介词、连接词、从句结构，使句子通顺自然|
 |句式语言|caption 正文仅用英文|
 |实体一致|输入会按 `obj_id` 标注短语所属目标：**同一 obj_id 的多条短语 = 同一实体的不同说法**，绝不能写成两个人/两个物体|
+|实体分立|**不同 obj_id = 不同实体**，绝不能写成「A 也是 B / A is B / A who is also B」把两个目标合并成一个|
 
 
 ## 2 Caption-风格
@@ -25,7 +26,8 @@
 |要求|说明|
 |---|---|
 |场景描述|俯视/航拍场景可用 in the scene/ on the road/nearby 等，但不要空泛堆砌|
-|目标组合|不同 `obj_id` 才是不同目标，可用 near / beside / next to 等空间关系|
+|目标组合|不同 `obj_id` 才是不同目标，可用 near / beside / next to / and / with 等**并列或空间关系**把它们分开写|
+|禁止等同（跨目标）|对不同 `obj_id` **禁止**：is / is a / is also / who is also / known as / aka / the same as 等把 phrase_A 说成 phrase_B|
 |同目标多短语|同一 `obj_id` 的多条短语必须合成**一个**主体：用同位、并列属性、with/holding/wearing、关系从句等；**禁止** near / beside / next to / stands near 把它们拆成多人|
 |句式规范|一条 caption 可含多句完整英文；全部给定短语必须用上，句间逻辑通顺即可|
 
@@ -45,6 +47,8 @@
 
 **不可接受**：
 > A truck and a person stand by a cone. ← 短语被改写/省略
+> A white pickup truck is also a worker in orange vest. ← 错误：把两个不同 obj 说成同一个
+> A white pickup truck who is also a worker in orange vest stands by a traffic cone. ← 错误：跨目标用 is also
 
 ### 3.2 示例2（一条 caption 内多句 · 不同目标）
 
@@ -71,7 +75,7 @@
 
 **可接受**（仍是**一个人**；短语原样嵌入）：
 > A lady holding umbrella, a woman in floral swimsuit with a pink umbrella, stands outdoors.
-> A woman in floral swimsuit is a lady holding umbrella under a pink umbrella.
+> A woman in floral swimsuit, a lady holding umbrella under a pink umbrella, stands outdoors.
 
 **不可接受**（把同目标拆成两人/两实体）：
 > A lady holding umbrella stands near a woman in floral swimsuit under a pink umbrella. ← 错误：near 暗示两人
@@ -81,8 +85,24 @@
 
 - 同位/并列：`A {phrase_a}, a {phrase_b}, ...`
 - 属性附着：`A {phrase_a} with a {phrase_b}` / `wearing` / `holding`
-- 关系从句：`A {phrase_a} who is also a {phrase_b}`
+- 关系从句（**仅同 obj_id**）：`A {phrase_a} who is also a {phrase_b}`
 - **禁止**对同 `obj_id` 使用：near / beside / next to / stands near / next to another / 暗示多人的空间分置
+
+### 3.4 示例4（不同目标 · 禁止「也是」合并）★ 易错
+
+给定短语（两个不同目标）：
+
+- [obj 0] blue special vehicle
+- [obj 1] white sedan
+
+**可接受**（两个实体，并列/空间关系）：
+> A blue special vehicle is near a white sedan.
+> There is a blue special vehicle and a white sedan in the scene.
+
+**不可接受**（把两个目标说成同一个）：
+> A blue special vehicle is also a white sedan. ← 错误
+> A blue special vehicle is a white sedan. ← 错误
+> A blue special vehicle who is also a white sedan. ← 错误
 
 
 ## 4 输出格式（暂时不需要改动）

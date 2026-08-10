@@ -6,7 +6,8 @@ REM Usage:
 REM   double-click this file
 REM   1-start_review.bat --port 8090
 REM   1-start_review.bat --dataset D:\data\your_dataset
-REM Close this window to stop the server and free the port.
+REM Close this window to stop the server and free THIS port.
+REM Multi-instance: if PORT busy, auto use PORT+1 / +2 ... (keeps other windows).
 REM
 REM Python resolve order:
 REM   1) .\runtime\python\python.exe        (portable zip)
@@ -78,7 +79,7 @@ if errorlevel 1 (
 
 echo.
 echo   Grounding review UI
-echo   http://localhost:%PORT%
+echo   preferred port: %PORT%  (auto +1 if busy)
 if defined DATASET (
   echo   dataset: %DATASET%
 ) else (
@@ -87,7 +88,7 @@ if defined DATASET (
 echo   vLLM: %VLLM_BASE_URL%
 echo   model: %VLLM_MODEL%
 echo   python: %PY%
-echo   Close this window to free port %PORT%
+echo   Close this window to free THIS instance port
 echo.
 
 if not exist "%~dp0util\win_job_run.ps1" (
@@ -96,25 +97,15 @@ if not exist "%~dp0util\win_job_run.ps1" (
   exit /b 1
 )
 
-REM Job Object: closing console kills python child
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0util\win_job_run.ps1" -Port %PORT% -Dataset "%DATASET%" -Python "%PY%"
+REM Job Object: closing console kills python child; port auto-increments if busy
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0util\win_job_run.ps1" -Port %PORT% -Dataset "%DATASET%" -Python "%PY%" -OpenBrowser
 set "ERR=%ERRORLEVEL%"
-
-call :free_port %PORT%
 
 echo.
 if not "%ERR%"=="0" (
   echo Service exited, code %ERR%
 ) else (
-  echo Service exited, port %PORT% freed
+  echo Service exited, this instance port freed
 )
 pause
 endlocal & exit /b %ERR%
-
-:free_port
-set "_p=%~1"
-for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":%_p% " ^| findstr "LISTENING"') do (
-  echo   Free port %_p% PID %%P
-  taskkill /F /PID %%P >nul 2>&1
-)
-goto :eof

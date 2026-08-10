@@ -3,6 +3,7 @@ setlocal EnableExtensions
 
 REM Portable entry: double-click start.bat
 REM Keep this file ASCII-only (UTF-8 Chinese breaks cmd.exe).
+REM Browser opens from win_job_run.ps1 after the real free port is chosen.
 
 cd /d "%~dp0"
 
@@ -19,9 +20,6 @@ if not exist "%~dp0yoloe\runtime\python\python.exe" (
   pause
   exit /b 1
 )
-
-REM Open browser shortly after the server starts
-start "" cmd /c "timeout /t 2 /nobreak >nul & start http://localhost:8090/"
 
 call "%~dp0yoloe\1-start_review.bat" %*
 endlocal & exit /b %ERRORLEVEL%

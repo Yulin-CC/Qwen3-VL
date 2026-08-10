@@ -20,7 +20,7 @@ param(
   [switch]$SkipPythonInstall,
   [switch]$ForcePip,
   [switch]$SkipZip,
-  [string]$VersionTag = "v0.3.8"
+  [string]$VersionTag = "v0.3.11"
 )
 
 $ErrorActionPreference = "Stop"
@@ -229,6 +229,29 @@ if (Test-Path -LiteralPath $ModelDir) {
   Copy-TreeFast $ModelDir (Join-Path $YoloeOut "model")
 }
 Copy-Item -Path (Join-Path $YoloeRoot "1-start_review.bat") -Destination (Join-Path $YoloeOut "1-start_review.bat") -Force
+
+# Annotation rules doc + screenshots (ASCII-only comments: PS5.1 encoding)
+$ZOthers = Join-Path $YoloeRoot "z-others"
+$ZOut = Join-Path $YoloeOut "z-others"
+New-Item -ItemType Directory -Force -Path $ZOut | Out-Null
+if (Test-Path -LiteralPath $ZOthers) {
+  Get-ChildItem -LiteralPath $ZOthers -File -Filter "*.md" -ErrorAction SilentlyContinue |
+    Where-Object {
+      try {
+        $head = Get-Content -LiteralPath $_.FullName -TotalCount 5 -Encoding UTF8 -ErrorAction Stop
+        ($head -join "`n") -match "GroundingView"
+      } catch { $false }
+    } |
+    ForEach-Object {
+      Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $ZOut $_.Name) -Force
+      Write-Host "  doc: $($_.Name)"
+    }
+  $PicDir = Join-Path $ZOthers "pic"
+  if (Test-Path -LiteralPath $PicDir) {
+    Copy-TreeFast $PicDir (Join-Path $ZOut "pic")
+    Write-Host "  pic: z-others\pic"
+  }
+}
 
 Copy-Item -LiteralPath $StartPortable -Destination (Join-Path $BundleDir "start.bat") -Force
 Copy-Item -LiteralPath $UserReadme -Destination (Join-Path $BundleDir "README.txt") -Force

@@ -80,6 +80,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
 .phrase-chip:hover{border-color:#86efac;color:#bbf7d0}
 .phrase-chip.selected{border-color:#22c55e;background:#14532d66;color:#bbf7d0;
                       box-shadow:inset 0 0 0 1px #22c55e99}
+.phrase-chip.used-elsewhere{border-style:dashed;border-color:#64748b;color:#94a3b8;opacity:.85}
+.phrase-chip.used-elsewhere:hover{border-color:#94a3b8;color:#cbd5e1}
+.phrase-chip.selected.used-elsewhere{border-style:solid;opacity:1}
 .obj-card.focus .phrase-chip{border-color:#fbbf2488}
 .obj-card.focus .phrase-chip.selected{border-color:#fbbf24;box-shadow:inset 0 0 0 1px #fbbf24,0 0 8px #fbbf2444}
 #empty-obj{color:#64748b;font-size:12px;padding:16px 4px}
@@ -1279,14 +1282,120 @@ function needsZh(it){
   });
 }
 
+function normPhrase(s){
+  return String(s || '').trim().replace(/\s+/g, ' ');
+}
+
 function usedPhraseSets(cap){
   const m = {};
   (cap && cap.phrases || []).forEach(p => {
-    if (!p || !p.phrase) return;
+    if (!p) return;
+    const ph = normPhrase(p.phrase);
+    if (!ph) return;
     if (!m[p.obj_id]) m[p.obj_id] = new Set();
-    m[p.obj_id].add(p.phrase);
+    m[p.obj_id].add(ph);
   });
   return m;
+}
+
+const PHRASE_DISPLAY_LIMIT = 3;
+
+/** 每个目标固定展示 3 条：当前 caption 已选优先，再补其余 */
+function pickDisplayPhrases(phrases, zhList, usedSet){
+  const usedLower = new Set([...(usedSet || [])].map(s => String(s).toLowerCase()));
+  const rows = (phrases || []).map((ph, i) => ({
+    ph: normPhrase(ph),
+    zh: (zhList && zhList[i]) ? String(zhList[i]) : '',
+    idx: i,
+  })).filter(r => r.ph);
+  const selected = [];
+  const rest = [];
+  const seen = new Set();
+  rows.forEach(r => {
+    const k = r.ph.toLowerCase();
+    if (seen.has(k)) return;
+    seen.add(k);
+    if (usedLower.has(k)) selected.push(r);
+    else rest.push(r);
+  });
+  return [...selected, ...rest].slice(0, PHRASE_DISPLAY_LIMIT);
+}
+
+/**
+ * 当前 caption 已选用短语立刻出现在右侧并高亮。
+ * 只做「phrases → descriptions」补齐，禁止从 caption 正文反推选用
+ * （否则取消选用后若正文残留/句式仍含该词，会立刻被加回，表现为点不掉）。
+ */
+function syncActiveCaptionPhrasesToRight(cap){
+  if (!cap || !item) return false;
+  let changed = false;
+  item.descriptions = item.descriptions || {};
+  cap.phrases = Array.isArray(cap.phrases) ? cap.phrases : [];
+
+  const byOid = {};
+  (cap.phrases || []).forEach(p => {
+    if (!p) return;
+    const ph = normPhrase(p.phrase);
+    if (!ph || p.obj_id == null) return;
+    if (!byOid[p.obj_id]) byOid[p.obj_id] = new Set();
+    byOid[p.obj_id].add(ph);
+  });
+
+  rightPanelObjIds(cap).forEach(oid => {
+    const key = String(oid);
+    const desc = item.descriptions[key] || {phrases: [], zh: [], label: ''};
+    const phrases = (desc.phrases || []).map(normPhrase).filter(Boolean);
+    const zhList = Array.isArray(desc.zh) ? desc.zh.slice() : [];
+    while (zhList.length < phrases.length) zhList.push('');
+
+    const selected = byOid[oid] || new Set();
+    if (!selected.size){
+      item.descriptions[key] = {...desc, phrases, zh: zhList};
+      return;
+    }
+    const have = new Set(phrases.map(p => p.toLowerCase()));
+    const missing = [...selected].filter(ph => !have.has(ph.toLowerCase()));
+    if (missing.length){
+      desc.phrases = [...missing, ...phrases];
+      desc.zh = [...missing.map(() => ''), ...zhList];
+      item.descriptions[key] = desc;
+      changed = true;
+    } else {
+      item.descriptions[key] = {...desc, phrases, zh: zhList};
+    }
+  });
+
+  return changed;
+}
+
+/** 其它 caption 已选用的短语（不含当前 activeCap） */
+function phrasesUsedElsewhere(){
+  const m = {};
+  const caps = (item && item.captions && item.captions.captions) || [];
+  caps.forEach((c, i) => {
+    if (i === activeCap) return;
+    (c.phrases || []).forEach(p => {
+      if (!p) return;
+      const ph = normPhrase(p.phrase);
+      if (!ph) return;
+      if (!m[p.obj_id]) m[p.obj_id] = new Set();
+      m[p.obj_id].add(ph);
+    });
+  });
+  return m;
+}
+
+function captionHasSelectedPhrases(cap){
+  return !!(cap && Array.isArray(cap.phrases) && cap.phrases.some(
+    p => p && String(p.phrase || '').trim()
+  ));
+}
+
+function clearCaptionText(cap){
+  if (!cap) return;
+  cap.caption = '';
+  cap.zh = '';
+  cap.phrases = [];
 }
 
 function stripPhraseFromCaption(caption, phrase){
@@ -1326,18 +1435,24 @@ async function toggleObjPhrase(oid, phraseIdx){
   if (!active) return;
   const desc = item.descriptions[String(oid)] || {};
   const phrases = desc.phrases || [];
-  const phrase = (phrases[phraseIdx] || '').trim();
+  const phrase = normPhrase(phrases[phraseIdx]);
   if (!phrase) return;
 
   active.phrases = active.phrases || [];
   active.obj_ids = active.obj_ids || [];
-  const already = active.phrases.some(p => p.obj_id === oid && p.phrase === phrase);
+  const samePhrase = (p) =>
+    p && p.obj_id === oid && normPhrase(p.phrase).toLowerCase() === phrase.toLowerCase();
+  const already = active.phrases.some(samePhrase);
 
   // 取消=仅从 caption.phrases 去掉选用；obj_ids / descriptions 一律不动
   // （删目标只能点红色「删除」）
   if (already){
-    active.phrases = active.phrases.filter(p => !(p.obj_id === oid && p.phrase === phrase));
-    active.caption = stripPhraseFromCaption(active.caption, phrase);
+    active.phrases = active.phrases.filter(p => !samePhrase(p));
+    if (!(active.phrases && active.phrases.length)){
+      clearCaptionText(active);
+    } else {
+      active.caption = stripPhraseFromCaption(active.caption, phrase);
+    }
     setStatus(`取消选用: ${phrase} · 刷新 caption…`);
   } else {
     if (!active.obj_ids.includes(oid)) active.obj_ids.push(oid);
@@ -1355,19 +1470,13 @@ async function toggleObjPhrase(oid, phraseIdx){
   if (!ok) return;
   if (!curStem) return;
 
-  // 一个都没选：只保存空选用，绝不触发会重抽/删除的逻辑
+  // 一个都没选：caption 置空并保存，绝不触发会重抽/删除的逻辑
   if (!(active.phrases && active.phrases.length)){
-    try {
-      const tr = await api('/api/translate', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({text: active.caption || ''}),
-      });
-      active.zh = tr.zh || '';
-    } catch (_) {}
+    clearCaptionText(active);
     markDirty();
     await saveIfDirty();
     renderAll();
-    setStatus(`已取消选用: ${phrase}（目标仍保留，删除请点「删除」）`);
+    setStatus(`已取消选用: ${phrase} · caption 已清空（请选择目标描述）`);
     return;
   }
 
@@ -1498,6 +1607,15 @@ async function loadStem(stem){
 
 async function selectCap(i){
   if (i === activeCap) return;
+  const caps = (item && item.captions && item.captions.captions) || [];
+  const leaving = caps[activeCap];
+  if (leaving && !captionHasSelectedPhrases(leaving)){
+    if ((leaving.caption || '').trim()){
+      clearCaptionText(leaving);
+      markDirty();
+    }
+    alert(`captions${activeCap + 1} 的 caption 为空，请选择目标描述。`);
+  }
   const ok = await saveIfDirty();
   if (!ok) return;
   activeCap = i;
@@ -1553,6 +1671,10 @@ function renderCaptions(){
   if (activeCap >= caps.length) activeCap = 0;
 
   caps.forEach((c, i) => {
+    if (!captionHasSelectedPhrases(c) && ((c.caption || '').trim() || (c.zh || '').trim())){
+      clearCaptionText(c);
+      markDirty();
+    }
     const tab = document.createElement('div');
     tab.className = 'cap-tab' + (i === activeCap ? ' active' : '');
     tab.textContent = 'captions' + (i + 1);
@@ -1564,7 +1686,8 @@ function renderCaptions(){
 
   const c = caps[activeCap];
   const entries = activePhraseEntries(c);
-  const zhShow = c.zh ? c.zh : '（翻译中…）';
+  const emptySel = !captionHasSelectedPhrases(c);
+  const zhShow = emptySel ? '（请选择目标描述）' : (c.zh ? c.zh : '（翻译中…）');
   const multiHint = caps.length > 1
     ? `<span style="color:#fbbf24">共 ${caps.length} 条 caption · W↑ / S↓ 切换，勿漏检</span>`
     : `<span style="color:#64748b">悬停同步中英高亮 · 点击高亮图中目标 · 也可点图中框</span>`;
@@ -1627,8 +1750,10 @@ function renderObjects(){
     objList.innerHTML = '<div id="empty-obj">请在下方选择一条 caption，或点「新增」</div>';
     return;
   }
+  if (syncActiveCaptionPhrasesToRight(active)) markDirty();
   const focusIds = rightPanelObjIds(active);
   const used = usedPhraseSets(active);
+  const elsewhere = phrasesUsedElsewhere();
   if (!focusIds.length){
     objList.innerHTML = '<div id="empty-obj">该 caption 没有关联目标</div>';
     return;
@@ -1640,14 +1765,23 @@ function renderObjects(){
     const phrases = desc.phrases || [];
     const zhList = desc.zh || [];
     const usedSet = used[oid] || new Set();
+    const usedLower = new Set([...usedSet].map(s => s.toLowerCase()));
+    const elseSet = elsewhere[oid] || new Set();
+    const elseLower = new Set([...elseSet].map(s => s.toLowerCase()));
     const card = document.createElement('div');
     card.className = 'obj-card active' + (highlightObjId === oid ? ' focus' : '');
     card.title = '点击高亮图中目标';
-    const chips = phrases.length
-      ? phrases.map((ph, i) => {
-          const label = (zhList[i] && String(zhList[i]).trim()) ? zhList[i] : (ph || '（空）');
-          const sel = usedSet.has(ph) ? ' selected' : '';
-          return `<button type="button" class="phrase-chip${sel}" data-idx="${i}" title="${escHtml(ph)}">${escHtml(label)}</button>`;
+    const shown = pickDisplayPhrases(phrases, zhList, usedSet);
+    const chips = shown.length
+      ? shown.map(r => {
+          const phN = r.ph;
+          const label = (r.zh && r.zh.trim()) ? r.zh : (phN || '（空）');
+          const sel = usedLower.has(phN.toLowerCase()) ? ' selected' : '';
+          const other = elseLower.has(phN.toLowerCase()) ? ' used-elsewhere' : '';
+          const tip = sel
+            ? `${phN}（当前 caption 已选用）`
+            : (other ? `${phN}（其它 caption 已选用，尽量换一条）` : phN);
+          return `<button type="button" class="phrase-chip${sel}${other}" data-idx="${r.idx}" title="${escHtml(tip)}">${escHtml(label)}</button>`;
         }).join('')
       : '<span style="color:#64748b;font-size:12px">暂无描述</span>';
     card.innerHTML = `
@@ -1655,7 +1789,7 @@ function renderObjects(){
       <div class="obj-body">
         <div class="title"><span>obj ${oid} · ${escHtml(obj.label)}</span>
           <div class="row">
-            <button class="btn btn-outline btn-sm refresh-btn" title="仅刷新该目标描述">刷新</button>
+            <button class="btn btn-outline btn-sm refresh-btn" title="刷新未选用描述；当前 caption 已选用的会保留">刷新</button>
             <button class="btn btn-outline-danger btn-sm del-btn" title="删除该目标框">删除</button>
           </div>
         </div>
@@ -1668,8 +1802,17 @@ function renderObjects(){
     card.querySelector('.refresh-btn').onclick = async () => {
       const key = String(oid);
       const prev = item.descriptions[key] ? JSON.parse(JSON.stringify(item.descriptions[key])) : null;
-      setStatus(`刷新 obj ${oid} 描述…`);
-      const res = await api(`/api/refresh_desc/${encodeURIComponent(curStem)}/${oid}`, {method:'POST'});
+      const nKeep = (used[oid] || new Set()).size;
+      const okSave = await saveIfDirty();
+      if (!okSave) return;
+      setStatus(nKeep
+        ? `刷新 obj ${oid} 描述（保留 ${nKeep} 条已选，重刷其余…）`
+        : `刷新 obj ${oid} 描述…`);
+      const res = await api(`/api/refresh_desc/${encodeURIComponent(curStem)}/${oid}`, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({sentence_id: activeCap}),
+      });
       if (res.error){
         alert('刷新失败，已保留原描述：\n' + res.error);
         if (prev) item.descriptions[key] = prev;
@@ -1690,7 +1833,11 @@ function renderObjects(){
       refreshedDescAt[key] = Date.now();
       markDirty();
       renderObjects();
-      setStatus(`obj ${oid} 描述已刷新（${newPhrases.length} 条）`);
+      const nKept = (res.kept || []).length;
+      const nFresh = (res.refreshed || []).length;
+      setStatus(nKept
+        ? `obj ${oid}：保留 ${nKept} 条已选，新刷 ${nFresh} 条`
+        : `obj ${oid} 描述已刷新（${newPhrases.length} 条）`);
     };
     card.querySelector('.del-btn').onclick = () => deleteObject(oid, obj.label);
     card.querySelectorAll('.phrase-chip').forEach(chip => {
@@ -2330,7 +2477,32 @@ async function onRulesSceneChange(){
   setStatus(`规则场景: ${rulesScene || '通用'} · ${d.split(/[\\/]/).pop() || ''} / ${c.split(/[\\/]/).pop() || ''}`);
 }
 
+/** 关标签释放本实例端口；刷新时心跳会取消预约的 shutdown */
+function bindBrowserLifecycle(){
+  const beat = () => {
+    try {
+      fetch('/api/heartbeat', {method:'POST', keepalive:true}).catch(()=>{});
+    } catch (_) {}
+  };
+  const goodbye = () => {
+    try {
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon('/api/shutdown');
+        return;
+      }
+    } catch (_) {}
+    try {
+      fetch('/api/shutdown', {method:'POST', keepalive:true}).catch(()=>{});
+    } catch (_) {}
+  };
+  beat();
+  setInterval(beat, 3000);
+  window.addEventListener('pagehide', goodbye);
+  window.addEventListener('beforeunload', goodbye);
+}
+
 (async () => {
+  bindBrowserLifecycle();
   initResizers();
   initSideTabs();
   initViewerControls();

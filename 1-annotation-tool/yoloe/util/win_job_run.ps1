@@ -1,12 +1,28 @@
 # Start review service inside a Windows Job Object so closing the
-# console window kills the python child and frees the port.
+# console window kills the python child and frees THIS instance's port.
+# If preferred Port is busy, auto try Port+1 ... (multi-instance).
 param(
   [Parameter(Mandatory = $true)][int]$Port,
   [string]$Dataset = "",
-  [string]$Python = "python"
+  [string]$Python = "python",
+  [int]$MaxPortTries = 20,
+  [switch]$OpenBrowser
 )
 
 $ErrorActionPreference = "SilentlyContinue"
+
+function Test-PortFree([int]$p) {
+  $hit = Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue
+  return -not [bool]$hit
+}
+
+function Find-FreePort([int]$start, [int]$maxTry) {
+  for ($i = 0; $i -lt $maxTry; $i++) {
+    $p = $start + $i
+    if (Test-PortFree $p) { return $p }
+  }
+  throw "No free port in range $start .. $($start + $maxTry - 1)"
+}
 
 function Free-Port([int]$p) {
   Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue |
@@ -76,7 +92,23 @@ public static class KillJob {
 }
 "@
 
-Free-Port $Port
+$preferred = $Port
+try {
+  $Port = Find-FreePort $preferred $MaxPortTries
+} catch {
+  Write-Host "[ERROR] $($_.Exception.Message)"
+  exit 1
+}
+
+if ($Port -ne $preferred) {
+  Write-Host "  Port $preferred busy -> using $Port (multi-instance)"
+} else {
+  Write-Host "  Using port $Port"
+}
+
+$url = "http://localhost:$Port/"
+Write-Host "  Open $url"
+Write-Host ""
 
 $pyArgs = @("util\app.py", "--port", "$Port")
 if ($Dataset -and $Dataset.Trim().Length -gt 0) {
@@ -96,11 +128,17 @@ if (-not [KillJob]::AssignProcessToJobObject($job, $proc.Handle)) {
   Write-Host "[WARN] Job Object assign failed; close window may leave port occupied"
 }
 
+if ($OpenBrowser) {
+  Start-Sleep -Seconds 1
+  Start-Process $url
+}
+
 try {
   Wait-Process -Id $proc.Id
 } finally {
   if (-not $proc.HasExited) {
     Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
   }
+  # Only free THIS instance's port (do not kill other multi-instance windows)
   Free-Port $Port
 }

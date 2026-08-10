@@ -640,8 +640,10 @@ def validate_api():
     images_dirname = normalize_images_dirname(
         data.get("images_dirname") or state.get("images_dirname") or "images"
     )
+    force = bool(data.get("force"))
     result = validate_dataset(
         root, jsons_dirname=jsons_dirname, images_dirname=images_dirname,
+        force=force,
     )
     return jsonify(result)
 
@@ -841,9 +843,15 @@ def generate_start():
         _gen_job["jsons_dirname"] = jsons_dirname
         _gen_job["images_dirname"] = images_dirname
 
+    # regenerate(force) 强制全量校验；续跑优先 draft/validate_log.json
     validation = validate_dataset(
         root, jsons_dirname=jsons_dirname, images_dirname=images_dirname,
+        force=bool(force),
     )
+    if validation.get("from_cache"):
+        _gen_log("校验命中 draft/validate_log.json，跳过全量扫描")
+    else:
+        _gen_log("校验完成，已写入 draft/validate_log.json")
     if not validation.get("ok"):
         _set_progress("validate", "error")
         with _gen_lock:
@@ -861,7 +869,11 @@ def generate_start():
 
     geom = validation.get("geometry") or data.get("geometry") or ""
     state["geometry"] = geom
-    _set_progress("validate", "done", pct=100, detail=f"通过 · {geom or '?'}")
+    cache_tag = "缓存" if validation.get("from_cache") else "全量"
+    _set_progress(
+        "validate", "done", pct=100,
+        detail=f"通过 · {geom or '?'} · {cache_tag}",
+    )
     assessment = assess_draft(root, jsons_dirname=jsons_dirname, geometry=geom)
     if force:
         stages = list(assessment.get("stages") or [])
@@ -1084,20 +1096,36 @@ def save_item(stem):
                 os.path.join(draft_dir(_root()), "descriptions", f"{stem}_obj{int(oid):04d}.json"),
                 out,
             )
-    # captions: refresh token spans
+    # captions: refresh token spans；无选用短语时强制 caption 为空
     if "captions" in data:
         caps = data["captions"]
         for sent in caps.get("captions", []):
+            phrases = sent.get("phrases") or []
+            has_sel = any(
+                isinstance(ph, dict) and str(ph.get("phrase") or "").strip()
+                for ph in phrases
+            )
+            if not has_sel:
+                sent["phrases"] = []
+                sent["caption"] = ""
+                sent["zh"] = ""
+                continue
             caption = sent.get("caption", "")
-            for ph in sent.get("phrases", []):
-                ph["tokens_positive"] = phrase_token_span(caption, ph.get("phrase", ""))
+            for ph in phrases:
+                if isinstance(ph, dict):
+                    ph["tokens_positive"] = phrase_token_span(
+                        caption, ph.get("phrase", "")
+                    )
         write_json(os.path.join(draft_dir(_root()), "captions", f"{stem}.json"), caps)
     return jsonify({"ok": True})
 
 
 @app.route("/api/refresh_desc/<stem>/<int:obj_id>", methods=["POST"])
 def refresh_desc(stem, obj_id):
-    """刷新单个目标描述；失败时不覆盖已有 draft。"""
+    """刷新单个目标描述；失败时不覆盖已有 draft。
+
+    若 body 带 sentence_id：保留该 caption 已选用短语，只重刷其余空位（合计最多 3 条）。
+    """
     if not _root():
         return jsonify({"error": "未配置数据集"}), 400
     desc_path = os.path.join(
@@ -1105,18 +1133,91 @@ def refresh_desc(stem, obj_id):
     )
     old = load_json(desc_path)
     try:
+        body = request.json or {}
+        sentence_id = body.get("sentence_id")
+        try:
+            sentence_id = int(sentence_id) if sentence_id is not None else None
+        except (TypeError, ValueError):
+            sentence_id = None
+
+        cap_path = os.path.join(draft_dir(_root()), "captions", f"{stem}.json")
+        caps = load_json(cap_path, {"captions": []})
+        sents = caps.get("captions") or []
+
+        keep = []
+        avoid = []
+        if sentence_id is not None and 0 <= sentence_id < len(sents):
+            for ph in sents[sentence_id].get("phrases") or []:
+                if not isinstance(ph, dict) or ph.get("obj_id") != obj_id:
+                    continue
+                p = (ph.get("phrase") or "").strip()
+                if p and p not in keep:
+                    keep.append(p)
+        for sent in sents:
+            for ph in sent.get("phrases") or []:
+                if not isinstance(ph, dict) or ph.get("obj_id") != obj_id:
+                    continue
+                p = (ph.get("phrase") or "").strip()
+                if p and p not in avoid:
+                    avoid.append(p)
+
+        DISPLAY_N = 3
+        keep = keep[:DISPLAY_N]
+        n_new = max(0, DISPLAY_N - len(keep)) if keep else DISPLAY_N
+        old_phrases = (old or {}).get("phrases") or []
+        old_zh = (old or {}).get("zh") or []
+        old_zh_map = {}
+        for i, p in enumerate(old_phrases):
+            if isinstance(p, str) and p.strip() and i < len(old_zh) and old_zh[i]:
+                old_zh_map[p.strip()] = old_zh[i]
+
+        def _attach_zh(phrases):
+            return [
+                old_zh_map[p] if p in old_zh_map else translate_text(p)
+                for p in phrases
+            ]
+
+        if keep and n_new == 0:
+            r = dict(old or {})
+            r["obj_id"] = obj_id
+            r["stem"] = stem
+            r["phrases"] = keep
+            r["zh"] = _attach_zh(keep)
+            r["label"] = (old or {}).get("label") or r.get("label") or ""
+            write_json(desc_path, r)
+            return jsonify({
+                "ok": True, "description": r, "kept": keep, "refreshed": [],
+            })
+
+        avoid_for_gen = list(dict.fromkeys(avoid + keep))
+        min_phrases = n_new if keep else DISPLAY_N
         r = describe_one_object(
-            _root(), stem, obj_id, _client(), load_rules(), write=False
+            _root(), stem, obj_id, _client(), load_rules(),
+            write=False, avoid_phrases=avoid_for_gen, min_phrases=min_phrases,
         )
-        phrases = [p for p in (r.get("phrases") or []) if isinstance(p, str) and p.strip()]
+        fresh = [p for p in (r.get("phrases") or []) if isinstance(p, str) and p.strip()]
+        keep_l = {p.lower() for p in keep}
+        fresh = [p for p in fresh if p.lower() not in keep_l][:n_new]
+        if keep:
+            if len(fresh) < 1:
+                raise ValueError("模型未返回可替换的新短语")
+            phrases = (keep + fresh)[:DISPLAY_N]
+        else:
+            phrases = fresh[:DISPLAY_N]
         if len(phrases) < 1:
             raise ValueError("模型未返回有效短语")
+
         r["phrases"] = phrases
-        r["zh"] = [translate_text(p) for p in phrases]
+        r["zh"] = _attach_zh(phrases)
+        r["label"] = (old or {}).get("label") or r.get("label") or ""
         write_json(desc_path, r)
-        return jsonify({"ok": True, "description": r})
+        return jsonify({
+            "ok": True,
+            "description": r,
+            "kept": keep,
+            "refreshed": fresh if keep else phrases,
+        })
     except Exception as e:
-        # 失败时绝不清空：保留原文件
         return jsonify({"error": str(e), "description": old}), 500
 
 
@@ -1306,13 +1407,80 @@ def export_api():
     return jsonify({"ok": True, "scope": "current", "path": path, "count": 1})
 
 
+#-------------#
+# 浏览器关闭 → 释放本实例端口（刷新可被心跳取消）
+#-------------#
+_shutdown_lock = threading.Lock()
+_shutdown_timer = None
+_BROWSER_SHUTDOWN_DELAY = 2.5
+
+
+def _exit_release_port(reason: str = ""):
+    msg = "正在退出，释放端口…"
+    if reason:
+        msg = f"{reason}，{msg}"
+    print(f"\n  {msg}", flush=True)
+    os._exit(0)
+
+
+def _cancel_pending_shutdown():
+    global _shutdown_timer
+    with _shutdown_lock:
+        t = _shutdown_timer
+        _shutdown_timer = None
+    if t is not None:
+        try:
+            t.cancel()
+        except Exception:
+            pass
+
+
+def _schedule_browser_shutdown(delay: float = _BROWSER_SHUTDOWN_DELAY):
+    """关标签后短延迟退出；若期间收到心跳（刷新）则取消。"""
+    global _shutdown_timer
+
+    def _do():
+        _exit_release_port("浏览器已关闭")
+
+    with _shutdown_lock:
+        if _shutdown_timer is not None:
+            try:
+                _shutdown_timer.cancel()
+            except Exception:
+                pass
+        _shutdown_timer = threading.Timer(max(0.3, float(delay)), _do)
+        _shutdown_timer.daemon = True
+        _shutdown_timer.start()
+
+
+@app.route("/api/heartbeat", methods=["GET", "POST"])
+def heartbeat_api():
+    """页面心跳：仅用于取消「关页预约」的 shutdown（例如刷新）。"""
+    _cancel_pending_shutdown()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/shutdown", methods=["GET", "POST"])
+def shutdown_api():
+    """浏览器关闭/刷新时调用；短延迟后退出，心跳可取消。"""
+    delay = _BROWSER_SHUTDOWN_DELAY
+    try:
+        if request.is_json and isinstance(request.json, dict) and "delay" in request.json:
+            delay = float(request.json.get("delay"))
+        elif request.args.get("delay") is not None:
+            delay = float(request.args.get("delay"))
+    except Exception:
+        delay = _BROWSER_SHUTDOWN_DELAY
+    _schedule_browser_shutdown(delay)
+    return jsonify({"ok": True, "shutdown_in": delay})
+
+
 def _install_shutdown_handlers():
     """Ctrl+C / 关控制台窗口时尽快退出，便于释放端口。"""
     import signal
 
     def _stop(*_args):
-        print("\n  正在退出，释放端口…", flush=True)
-        os._exit(0)
+        _exit_release_port("控制台关闭")
 
     for sig_name in ("SIGINT", "SIGTERM", "SIGBREAK", "SIGHUP"):
         sig = getattr(signal, sig_name, None)
@@ -1371,5 +1539,5 @@ if __name__ == "__main__":
     print(f"  rules_scene: {get_rules_scene() or 'default'}")
     print(f"  describe: {resolve_describe_rules_path()}")
     print(f"  caption:  {resolve_caption_rules_path()}")
-    print("  提示: 关闭启动窗口或 Ctrl+C 将自动释放端口\n")
+    print("  提示: 关闭网页标签 / 启动窗口 / Ctrl+C 将自动释放本实例端口\n")
     app.run(host=args.host, port=args.port, debug=False, use_reloader=False)

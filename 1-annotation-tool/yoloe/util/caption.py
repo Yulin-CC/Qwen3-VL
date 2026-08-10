@@ -179,9 +179,27 @@ def _is_weak_phrase(phrase: str, label: str) -> bool:
     return p in weak
 
 
-def pick_phrases_for_group(objects, desc_map, obj_ids, rng):
-    """从目标描述 phrases 中抽样；优先避开 label/object 占位词。"""
+def used_phrases_by_obj(captions, exclude_sentence_id=None):
+    """统计各 caption 已选用短语：obj_id -> set(phrase)。可排除某一条 caption。"""
+    out = {}
+    for i, c in enumerate(captions or []):
+        if exclude_sentence_id is not None and i == exclude_sentence_id:
+            continue
+        for ph in c.get("phrases") or []:
+            if not isinstance(ph, dict):
+                continue
+            oid = ph.get("obj_id")
+            phrase = (ph.get("phrase") or "").strip()
+            if oid is None or not phrase:
+                continue
+            out.setdefault(int(oid), set()).add(phrase)
+    return out
+
+
+def pick_phrases_for_group(objects, desc_map, obj_ids, rng, avoid_by_obj=None):
+    """从目标描述 phrases 中抽样；优先避开 label/object 占位词与其它 caption 已用短语。"""
     id2obj = {o["obj_id"]: o for o in objects}
+    avoid_by_obj = avoid_by_obj or {}
     phrases = []
     for oid in obj_ids:
         obj = id2obj[oid]
@@ -189,6 +207,11 @@ def pick_phrases_for_group(objects, desc_map, obj_ids, rng):
         opts = [x for x in (desc.get("phrases") or []) if isinstance(x, str) and x.strip()]
         strong = [x for x in opts if not _is_weak_phrase(x, obj["label"])]
         pool = strong or opts or [obj["label"]]
+        avoid = avoid_by_obj.get(int(oid)) or set()
+        if avoid:
+            fresh = [x for x in pool if x not in avoid]
+            if fresh:
+                pool = fresh
         # 偏好稍长、信息更多的短语
         pool = sorted(pool, key=lambda s: (-len(s.split()), -len(s)))
         top = pool[: max(1, min(3, len(pool)))]
@@ -210,9 +233,12 @@ def _format_phrases_for_prompt(phrases):
         key = int(oid) if oid is not None else -1
         groups.setdefault(key, []).append((p.get("phrase") or "").strip())
 
+    n_objs = len(groups)
     lines = [
-        "Phrases (tagged by obj_id; SAME obj_id = ONE entity, different wordings — "
-        "do NOT invent multiple people/objects or use near/beside/next to between them):"
+        "Phrases (tagged by obj_id):",
+        "- SAME obj_id = ONE entity (different wordings). Do NOT split with near/beside/next to.",
+        "- DIFFERENT obj_id = DIFFERENT entities. Do NOT merge with is/is a/is also/who is also.",
+        f"- This caption has {n_objs} distinct obj_id(s).",
     ]
     for oid, phs in groups.items():
         tag = f"obj {oid}" if oid >= 0 else "obj ?"
@@ -235,8 +261,9 @@ def build_caption_with_llm(client: VLLMClient, phrases, rules=None, vary_structu
         "You MUST include EVERY phrase below EXACTLY (same spelling/spacing).\n"
         "Do NOT replace/omit/paraphrase any phrase.\n"
         "Do NOT add grounding referents that are not in the list.\n"
-        "Phrases sharing the same obj_id describe ONE entity — never split them into "
-        "two people/objects with near/beside/next to/stands near.\n"
+        "SAME obj_id → ONE entity (never split with near/beside/next to/stands near).\n"
+        "DIFFERENT obj_id → DISTINCT entities (never merge with is/is a/is also/"
+        "who is also/known as; use near/and/with between them instead).\n"
     )
     if vary_structure:
         task = (
@@ -257,7 +284,8 @@ def build_caption_with_llm(client: VLLMClient, phrases, rules=None, vary_structu
         prompt,
         system=(
             "Output JSON only. Keep every given phrase verbatim. "
-            "Same obj_id phrases = one entity."
+            "Same obj_id = one entity; different obj_id = different entities "
+            "(never say A is also B across obj_ids)."
         ),
         temperature=0.55 if vary_structure else 0.5,
         max_tokens=256,
@@ -340,11 +368,12 @@ def locked_phrases_from_entry(sent, objects):
 def build_one_caption_entry(objects, desc_map, obj_ids, strategy, grid_cell,
                             sentence_id, client=None, rng=None,
                             fixed_phrases=None, vary_structure=False,
-                            keep_obj_ids=None):
+                            keep_obj_ids=None, avoid_by_obj=None):
     """仅为指定 obj_ids / 锁定短语生成一条 caption。
 
     keep_obj_ids: 刷新时保留的关联目标列表。不得因「未选用短语」而丢掉目标
     （取消选用 ≠ 删除目标；删除只能走 delete_object）。
+    avoid_by_obj: 其它 caption 已用短语，抽样时尽量避开。
     """
     rng = rng or random.Random()
     # 过滤已删除的目标
@@ -376,7 +405,9 @@ def build_one_caption_entry(objects, desc_map, obj_ids, strategy, grid_cell,
         obj_ids = [oid for oid in (obj_ids or []) if oid in valid_ids]
         if not obj_ids:
             return None
-        phrases = pick_phrases_for_group(objects, desc_map, obj_ids, rng)
+        phrases = pick_phrases_for_group(
+            objects, desc_map, obj_ids, rng, avoid_by_obj=avoid_by_obj,
+        )
         if not phrases:
             return None
     if client is not None:
@@ -420,11 +451,12 @@ def regenerate_single_caption(dataset_root, stem, sentence_id, client=None, seed
     locked = locked_phrases_from_entry(sent, objects)
     raw_phrases = sent.get("phrases")
     keep_ids = list(sent.get("obj_ids") or [])
-    # 用户显式清空选用（phrases=[]）：禁止重抽；保留关联 obj_ids
+    # 用户显式清空选用（phrases=[]）：禁止重抽；caption 必须为空
     if isinstance(raw_phrases, list) and len(raw_phrases) == 0:
         replacement = dict(sent)
         replacement["phrases"] = []
-        replacement["caption"] = (sent.get("caption") or "").strip()
+        replacement["caption"] = ""
+        replacement["zh"] = ""
         replacement["obj_ids"] = keep_ids
         replacement["sentence_id"] = sentence_id
     elif locked:
@@ -441,7 +473,8 @@ def regenerate_single_caption(dataset_root, stem, sentence_id, client=None, seed
             keep_obj_ids=keep_ids,
         )
     else:
-        # 旧数据无 phrases 字段时，才按 obj_ids 重抽
+        # 旧数据无 phrases 字段时，才按 obj_ids 重抽（避开其它 caption 已用短语）
+        avoid = used_phrases_by_obj(caps, exclude_sentence_id=sentence_id)
         replacement = build_one_caption_entry(
             objects, desc_map,
             obj_ids=keep_ids,
@@ -452,6 +485,7 @@ def regenerate_single_caption(dataset_root, stem, sentence_id, client=None, seed
             rng=rng,
             vary_structure=True,
             keep_obj_ids=keep_ids,
+            avoid_by_obj=avoid,
         )
     if replacement is None:
         raise ValueError("该 caption 无有效目标，无法刷新")
@@ -560,9 +594,11 @@ def add_caption_prefer_uncovered(dataset_root, stem, client=None, seed=None):
     if not g:
         raise ValueError("无法采样目标组")
     desc_map = load_desc_map(dataset_root, stem)
+    avoid = used_phrases_by_obj(caps)
     entry = build_one_caption_entry(
         objects, desc_map, g["obj_ids"], g["strategy"], g["grid_cell"],
         sentence_id=len(caps), client=client, rng=rng,
+        avoid_by_obj=avoid,
     )
     if entry is None:
         raise ValueError("生成 caption 失败")
@@ -594,9 +630,11 @@ def caption_one_image(dataset_root, stem, client=None, n_captions=5, seed=None, 
 
     captions = []
     for i, g in enumerate(groups):
+        avoid = used_phrases_by_obj(captions)
         entry = build_one_caption_entry(
             objects, desc_map, g["obj_ids"], g["strategy"], g["grid_cell"],
             sentence_id=i, client=client, rng=rng,
+            avoid_by_obj=avoid,
         )
         if entry:
             captions.append(entry)

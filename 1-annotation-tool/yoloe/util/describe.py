@@ -67,12 +67,26 @@ def is_placeholder_desc(desc) -> bool:
     return False
 
 
-def describe_object(client: VLLMClient, crop_abs: str, label: str, rules: str = ""):
+def describe_object(client: VLLMClient, crop_abs: str, label: str, rules: str = "",
+                    avoid_phrases=None, min_phrases=3):
     # 规则全文进 user prompt（与 caption 一致）；任务指令置后
+    avoid = [
+        str(p).strip() for p in (avoid_phrases or [])
+        if isinstance(p, str) and str(p).strip()
+    ]
+    need = max(1, int(min_phrases or 3))
+    avoid_line = ""
+    if avoid:
+        listed = "; ".join(avoid[:12])
+        avoid_line = (
+            f"Do NOT reuse or lightly paraphrase these already-used phrases: {listed}.\n"
+            f"Prefer clearly different attributes / viewpoints / wording.\n"
+        )
     task = (
         f"Class label: {label}\n"
-        f"Write AT LEAST 3 short English noun phrases covering: "
+        f"Write AT LEAST {need} short English noun phrases covering: "
         f"(1) subtype/role (2) appearance/color (3) action/state.\n"
+        f"{avoid_line}"
         f"Follow the rules above when they apply.\n"
         f'Return ONLY valid JSON, example: '
         f'{{"phrases":["blue scooter","two-wheeled vehicle","parked scooter"]}}'
@@ -81,6 +95,7 @@ def describe_object(client: VLLMClient, crop_abs: str, label: str, rules: str = 
         prompt = str(rules).strip() + "\n\n" + task
     else:
         prompt = task
+    avoid_l = {a.lower() for a in avoid}
     last_err = None
     for _ in range(3):
         try:
@@ -94,11 +109,14 @@ def describe_object(client: VLLMClient, crop_abs: str, label: str, rules: str = 
                 p.strip() for p in (data.get("phrases") or [])
                 if isinstance(p, str) and p.strip()
             ]
-            if len(phrases) < 3:
-                raise ValueError(f"模型返回短语不足 3 条: {phrases}")
+            if avoid_l:
+                phrases = [p for p in phrases if p.lower() not in avoid_l]
+            if len(phrases) < need:
+                raise ValueError(f"模型返回短语不足 {need} 条: {phrases}")
             return {
                 "label": label,
-                "phrases": phrases[:8],
+                # 审阅侧固定展示 3 条
+                "phrases": phrases[: max(need, 3)],
                 "source": "vllm",
                 "error": None,
                 "zh": [],
@@ -109,7 +127,7 @@ def describe_object(client: VLLMClient, crop_abs: str, label: str, rules: str = 
 
 
 def describe_one_object(dataset_root, stem, obj_id, client: VLLMClient, rules: str = "",
-                        write: bool = True):
+                        write: bool = True, avoid_phrases=None, min_phrases=3):
     """生成单目标描述。write=False 时只返回结果，由调用方决定是否落盘（避免半成品覆盖）。"""
     obj_path = os.path.join(draft_dir(dataset_root), "objects", f"{stem}.json")
     with open(obj_path, encoding="utf-8") as f:
@@ -118,7 +136,10 @@ def describe_one_object(dataset_root, stem, obj_id, client: VLLMClient, rules: s
     if not obj:
         raise ValueError(f"obj_id 不存在: {obj_id}")
     crop_abs = os.path.join(dataset_root, obj["crop_path"])
-    desc = describe_object(client, crop_abs, obj["label"], rules)
+    desc = describe_object(
+        client, crop_abs, obj["label"], rules,
+        avoid_phrases=avoid_phrases, min_phrases=min_phrases,
+    )
     desc["obj_id"] = obj_id
     desc["stem"] = stem
     if write:
