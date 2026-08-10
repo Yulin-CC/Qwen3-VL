@@ -68,13 +68,16 @@ def is_placeholder_desc(desc) -> bool:
 
 
 def describe_object(client: VLLMClient, crop_abs: str, label: str, rules: str = "",
-                    avoid_phrases=None, min_phrases=3):
+                    avoid_phrases=None, min_phrases=3, with_zh: bool = False,
+                    max_retries: int = 3):
     # 规则全文进 user prompt（与 caption 一致）；任务指令置后
+    # with_zh=True：同一次视觉调用带回中文，避免刷新后再串行翻译
     avoid = [
         str(p).strip() for p in (avoid_phrases or [])
         if isinstance(p, str) and str(p).strip()
     ]
     need = max(1, int(min_phrases or 3))
+    retries = max(1, int(max_retries or 1))
     avoid_line = ""
     if avoid:
         listed = "; ".join(avoid[:12])
@@ -82,14 +85,28 @@ def describe_object(client: VLLMClient, crop_abs: str, label: str, rules: str = 
             f"Do NOT reuse or lightly paraphrase these already-used phrases: {listed}.\n"
             f"Prefer clearly different attributes / viewpoints / wording.\n"
         )
+    if with_zh:
+        example = (
+            '{"phrases":["blue scooter","parked scooter"],'
+            '"zh":["蓝色滑板车","停放的滑板车"]}'
+        )
+        zh_line = (
+            "Also provide Simplified Chinese for each phrase in parallel array \"zh\" "
+            "(same count/order).\n"
+        )
+        max_tokens = 384
+    else:
+        example = '{"phrases":["blue scooter","two-wheeled vehicle","parked scooter"]}'
+        zh_line = ""
+        max_tokens = 256
     task = (
         f"Class label: {label}\n"
         f"Write AT LEAST {need} short English noun phrases covering: "
         f"(1) subtype/role (2) appearance/color (3) action/state.\n"
         f"{avoid_line}"
+        f"{zh_line}"
         f"Follow the rules above when they apply.\n"
-        f'Return ONLY valid JSON, example: '
-        f'{{"phrases":["blue scooter","two-wheeled vehicle","parked scooter"]}}'
+        f"Return ONLY valid JSON, example: {example}"
     )
     if rules and str(rules).strip():
         prompt = str(rules).strip() + "\n\n" + task
@@ -97,29 +114,49 @@ def describe_object(client: VLLMClient, crop_abs: str, label: str, rules: str = 
         prompt = task
     avoid_l = {a.lower() for a in avoid}
     last_err = None
-    for _ in range(3):
+    for _ in range(retries):
         try:
             raw = client.describe_image(
                 crop_abs, prompt,
                 system=SYSTEM_PROMPT,
-                max_tokens=256,
+                max_tokens=max_tokens,
             )
             data = extract_json_object(raw)
             phrases = [
                 p.strip() for p in (data.get("phrases") or [])
                 if isinstance(p, str) and p.strip()
             ]
+            zh_raw = data.get("zh") or []
             if avoid_l:
-                phrases = [p for p in phrases if p.lower() not in avoid_l]
+                kept_zh = []
+                kept_ph = []
+                for i, p in enumerate(phrases):
+                    if p.lower() in avoid_l:
+                        continue
+                    kept_ph.append(p)
+                    if i < len(zh_raw) and isinstance(zh_raw[i], str) and zh_raw[i].strip():
+                        kept_zh.append(zh_raw[i].strip())
+                    else:
+                        kept_zh.append("")
+                phrases, zh_raw = kept_ph, kept_zh
             if len(phrases) < need:
                 raise ValueError(f"模型返回短语不足 {need} 条: {phrases}")
+            # 审阅侧固定展示 3 条；批量生成仍可只取 need
+            take = max(need, 3) if not with_zh else max(need, min(3, len(phrases)))
+            phrases = phrases[:take]
+            zh = []
+            if with_zh:
+                for i in range(len(phrases)):
+                    if i < len(zh_raw) and isinstance(zh_raw[i], str) and zh_raw[i].strip():
+                        zh.append(zh_raw[i].strip())
+                    else:
+                        zh.append("")
             return {
                 "label": label,
-                # 审阅侧固定展示 3 条
-                "phrases": phrases[: max(need, 3)],
+                "phrases": phrases,
                 "source": "vllm",
                 "error": None,
-                "zh": [],
+                "zh": zh,
             }
         except Exception as e:
             last_err = e
@@ -127,7 +164,8 @@ def describe_object(client: VLLMClient, crop_abs: str, label: str, rules: str = 
 
 
 def describe_one_object(dataset_root, stem, obj_id, client: VLLMClient, rules: str = "",
-                        write: bool = True, avoid_phrases=None, min_phrases=3):
+                        write: bool = True, avoid_phrases=None, min_phrases=3,
+                        with_zh: bool = False, max_retries: int = 3):
     """生成单目标描述。write=False 时只返回结果，由调用方决定是否落盘（避免半成品覆盖）。"""
     obj_path = os.path.join(draft_dir(dataset_root), "objects", f"{stem}.json")
     with open(obj_path, encoding="utf-8") as f:
@@ -139,6 +177,7 @@ def describe_one_object(dataset_root, stem, obj_id, client: VLLMClient, rules: s
     desc = describe_object(
         client, crop_abs, obj["label"], rules,
         avoid_phrases=avoid_phrases, min_phrases=min_phrases,
+        with_zh=with_zh, max_retries=max_retries,
     )
     desc["obj_id"] = obj_id
     desc["stem"] = stem

@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Grounding 检查</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="shortcut icon" href="/favicon.ico">
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
@@ -71,6 +73,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
 .obj-card{background:#20243a;border:1px solid #2d3148;border-radius:8px;padding:8px;display:flex;gap:10px;flex-shrink:0;cursor:pointer}
 .obj-card.active{border-color:#7c86f5}
 .obj-card.focus{border-color:#fbbf24;box-shadow:0 0 0 1px #fbbf2488,0 0 12px #fbbf2433}
+.obj-card.refreshing{opacity:.72;pointer-events:none}
+.obj-card.refreshing .phrase-list{opacity:.55}
+.obj-card.refreshing .refresh-btn{color:#93c5fd}
 .obj-thumb{width:72px;height:72px;object-fit:cover;border-radius:6px;background:#0f1117;flex-shrink:0;border:1px solid #2d3148}
 .obj-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
 .obj-body .title{font-size:11px;font-weight:600;display:flex;justify-content:space-between;gap:4px;align-items:center}
@@ -1803,41 +1808,50 @@ function renderObjects(){
       const key = String(oid);
       const prev = item.descriptions[key] ? JSON.parse(JSON.stringify(item.descriptions[key])) : null;
       const nKeep = (used[oid] || new Set()).size;
-      const okSave = await saveIfDirty();
-      if (!okSave) return;
+      const btn = card.querySelector('.refresh-btn');
+      const btnText = btn ? btn.textContent : '刷新';
+      card.classList.add('refreshing');
+      if (btn){ btn.textContent = '刷新中…'; btn.disabled = true; }
       setStatus(nKeep
         ? `刷新 obj ${oid} 描述（保留 ${nKeep} 条已选，重刷其余…）`
         : `刷新 obj ${oid} 描述…`);
-      const res = await api(`/api/refresh_desc/${encodeURIComponent(curStem)}/${oid}`, {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({sentence_id: activeCap}),
-      });
-      if (res.error){
-        alert('刷新失败，已保留原描述：\n' + res.error);
-        if (prev) item.descriptions[key] = prev;
+      try {
+        const okSave = await saveIfDirty();
+        if (!okSave) return;
+        const res = await api(`/api/refresh_desc/${encodeURIComponent(curStem)}/${oid}`, {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({sentence_id: activeCap}),
+        });
+        if (res.error){
+          alert('刷新失败，已保留原描述：\n' + res.error);
+          if (prev) item.descriptions[key] = prev;
+          renderObjects();
+          setStatus(`obj ${oid} 刷新失败`);
+          return;
+        }
+        const desc = res.description || {};
+        const newPhrases = (desc.phrases || []).map(p => String(p || '').trim()).filter(Boolean);
+        if (!newPhrases.length){
+          alert('刷新失败：未返回有效描述，已保留原描述');
+          if (prev) item.descriptions[key] = prev;
+          renderObjects();
+          setStatus(`obj ${oid} 刷新未生效`);
+          return;
+        }
+        item.descriptions[key] = desc;
+        refreshedDescAt[key] = Date.now();
+        markDirty();
         renderObjects();
-        setStatus(`obj ${oid} 刷新失败`);
-        return;
+        const nKept = (res.kept || []).length;
+        const nFresh = (res.refreshed || []).length;
+        setStatus(nKept
+          ? `obj ${oid}：保留 ${nKept} 条已选，新刷 ${nFresh} 条`
+          : `obj ${oid} 描述已刷新（${newPhrases.length} 条）`);
+      } finally {
+        card.classList.remove('refreshing');
+        if (btn){ btn.textContent = btnText; btn.disabled = false; }
       }
-      const desc = res.description || {};
-      const newPhrases = (desc.phrases || []).map(p => String(p || '').trim()).filter(Boolean);
-      if (!newPhrases.length){
-        alert('刷新失败：未返回有效描述，已保留原描述');
-        if (prev) item.descriptions[key] = prev;
-        renderObjects();
-        setStatus(`obj ${oid} 刷新未生效`);
-        return;
-      }
-      item.descriptions[key] = desc;
-      refreshedDescAt[key] = Date.now();
-      markDirty();
-      renderObjects();
-      const nKept = (res.kept || []).length;
-      const nFresh = (res.refreshed || []).length;
-      setStatus(nKept
-        ? `obj ${oid}：保留 ${nKept} 条已选，新刷 ${nFresh} 条`
-        : `obj ${oid} 描述已刷新（${newPhrases.length} 条）`);
     };
     card.querySelector('.del-btn').onclick = () => deleteObject(oid, obj.label);
     card.querySelectorAll('.phrase-chip').forEach(chip => {

@@ -59,6 +59,15 @@ app.jinja_env.auto_reload = True
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
 
+@app.route("/favicon.ico")
+def favicon():
+    return send_from_directory(
+        os.path.join(app.root_path, "static"),
+        "favicon.svg",
+        mimetype="image/svg+xml",
+    )
+
+
 @app.after_request
 def _no_cache_html(resp):
     if resp.content_type and "text/html" in resp.content_type:
@@ -1171,11 +1180,25 @@ def refresh_desc(stem, obj_id):
             if isinstance(p, str) and p.strip() and i < len(old_zh) and old_zh[i]:
                 old_zh_map[p.strip()] = old_zh[i]
 
-        def _attach_zh(phrases):
-            return [
-                old_zh_map[p] if p in old_zh_map else translate_text(p)
-                for p in phrases
-            ]
+        def _attach_zh(phrases, model_zh=None):
+            """优先复用旧中文 / 模型同次返回；缺的再批量翻译（避免 N 次串行）。"""
+            model_zh = list(model_zh or [])
+            out = [""] * len(phrases)
+            miss_idx = []
+            miss_txt = []
+            for i, p in enumerate(phrases):
+                if p in old_zh_map:
+                    out[i] = old_zh_map[p]
+                elif i < len(model_zh) and isinstance(model_zh[i], str) and model_zh[i].strip():
+                    out[i] = model_zh[i].strip()
+                else:
+                    miss_idx.append(i)
+                    miss_txt.append(p)
+            if miss_txt:
+                filled = translate_batch(miss_txt)
+                for j, i in enumerate(miss_idx):
+                    out[i] = filled[j] if j < len(filled) else ""
+            return out
 
         if keep and n_new == 0:
             r = dict(old or {})
@@ -1191,24 +1214,37 @@ def refresh_desc(stem, obj_id):
 
         avoid_for_gen = list(dict.fromkeys(avoid + keep))
         min_phrases = n_new if keep else DISPLAY_N
+        # 交互刷新：同次要中文 + 少重试，少一轮串行翻译
         r = describe_one_object(
             _root(), stem, obj_id, _client(), load_rules(),
             write=False, avoid_phrases=avoid_for_gen, min_phrases=min_phrases,
+            with_zh=True, max_retries=2,
         )
         fresh = [p for p in (r.get("phrases") or []) if isinstance(p, str) and p.strip()]
+        fresh_zh_all = list(r.get("zh") or [])
         keep_l = {p.lower() for p in keep}
-        fresh = [p for p in fresh if p.lower() not in keep_l][:n_new]
+        fresh_f, fresh_zh = [], []
+        for i, p in enumerate(fresh):
+            if p.lower() in keep_l:
+                continue
+            fresh_f.append(p)
+            fresh_zh.append(fresh_zh_all[i] if i < len(fresh_zh_all) else "")
+            if len(fresh_f) >= n_new:
+                break
+        fresh = fresh_f
         if keep:
             if len(fresh) < 1:
                 raise ValueError("模型未返回可替换的新短语")
             phrases = (keep + fresh)[:DISPLAY_N]
+            model_zh_aligned = ([""] * len(keep) + fresh_zh)[:len(phrases)]
         else:
             phrases = fresh[:DISPLAY_N]
+            model_zh_aligned = fresh_zh[:len(phrases)]
         if len(phrases) < 1:
             raise ValueError("模型未返回有效短语")
 
         r["phrases"] = phrases
-        r["zh"] = _attach_zh(phrases)
+        r["zh"] = _attach_zh(phrases, model_zh_aligned)
         r["label"] = (old or {}).get("label") or r.get("label") or ""
         write_json(desc_path, r)
         return jsonify({

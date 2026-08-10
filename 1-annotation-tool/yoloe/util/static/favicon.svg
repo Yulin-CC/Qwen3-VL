@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- 15 dual-tone G: bar raised so it reads as G not C -->
+  <path d="M25.2 9.2A10 10 0 1 0 26 16.4" fill="none" stroke="#a5b4fc" stroke-width="3.4" stroke-linecap="round"/>
+  <path d="M26 16.4H15.2" fill="none" stroke="#7c86f5" stroke-width="3.4" stroke-linecap="round"/>
+  <circle cx="26" cy="16.4" r="2.35" fill="#22c55e"/>
+</svg>
