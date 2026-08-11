@@ -130,26 +130,44 @@ def resolve_jsons_dir(dataset_root: str, jsons_dirname: str = "jsons") -> str:
     return cand
 
 
-def dir_has_images(path: str) -> bool:
+def dir_has_images(path: str, max_check: int = 400) -> bool:
+    """是否含图片。scandir + 早停，避免大目录 os.listdir 卡死。"""
     if not path or not os.path.isdir(path):
         return False
     try:
-        for n in os.listdir(path):
-            if Path(n).suffix.lower() in IMG_EXTS and os.path.isfile(os.path.join(path, n)):
-                return True
+        n = 0
+        with os.scandir(path) as it:
+            for ent in it:
+                if not ent.is_file(follow_symlinks=False):
+                    continue
+                n += 1
+                if Path(ent.name).suffix.lower() in IMG_EXTS:
+                    return True
+                if n >= max_check:
+                    return False
     except OSError:
         return False
     return False
 
 
-def dir_has_label_jsons(path: str) -> bool:
-    """目录内是否有 LabelMe .json 或 VOC .xml 标签。"""
+def dir_has_label_jsons(path: str, max_check: int = 400) -> bool:
+    """目录内是否有 LabelMe .json 或 VOC .xml 标签。scandir + 早停。"""
     if not path or not os.path.isdir(path):
         return False
     try:
-        return any(is_label_filename(f) for f in os.listdir(path))
+        n = 0
+        with os.scandir(path) as it:
+            for ent in it:
+                if not ent.is_file(follow_symlinks=False):
+                    continue
+                n += 1
+                if is_label_filename(ent.name):
+                    return True
+                if n >= max_check:
+                    return False
     except OSError:
         return False
+    return False
 
 
 def normalize_images_dirname(name: str) -> str:
@@ -228,18 +246,19 @@ def resolve_images_dir(dataset_root: str, images_dirname: str = "images") -> str
     return cand
 
 
-def resolve_images_root(path: str):
+def resolve_images_root(path: str, deep: bool = True):
     """
     从用户选择的路径解析 (dataset_root, images_dir, images_dirname)。
     - 选中含 images/（或其它常见图像子目录）的根 → (root, root/<dir>, <dir>)
     - 选中常见图像文件夹本身 → (parent, that_dir, basename)
     - 选中直接放图的普通目录 → (path, path, '.')
+    deep=False：不扫「任意名」一级子目录（浏览导航时更快）。
     """
     path = os.path.realpath(path)
     if not os.path.isdir(path):
         return None, None, None
 
-    # 1) 优先：根下常见图像子目录
+    # 1) 优先：根下常见图像子目录（只探测已知名，不 listdir 全量子目录）
     for name in IMAGES_CANDIDATES:
         nested = os.path.join(path, name)
         if os.path.isdir(nested) and dir_has_images(nested):
@@ -253,16 +272,23 @@ def resolve_images_root(path: str):
             return parent, path, base
         return path, path, "."
 
-    # 3) 其它含图的一级子目录（任意名，如 train_imgs）
-    try:
-        for name in sorted(os.listdir(path)):
-            if name.startswith("."):
-                continue
-            nested = os.path.join(path, name)
-            if os.path.isdir(nested) and dir_has_images(nested):
-                return path, nested, name
-    except OSError:
-        pass
+    # 3) 其它含图的一级子目录（任意名，如 train_imgs）——浏览时跳过
+    if deep:
+        try:
+            checked = 0
+            with os.scandir(path) as it:
+                for ent in it:
+                    if not ent.is_dir(follow_symlinks=False):
+                        continue
+                    if ent.name.startswith("."):
+                        continue
+                    checked += 1
+                    if checked > 24:
+                        break
+                    if dir_has_images(ent.path):
+                        return path, ent.path, ent.name
+        except OSError:
+            pass
 
     return None, None, None
 

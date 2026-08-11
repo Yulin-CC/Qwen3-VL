@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from common import (
     IMG_EXTS,
+    LABEL_EXTS,
     draft_dir,
     ensure_dir,
     find_image_path,
@@ -26,6 +27,7 @@ from common import (
     load_labelme,
     normalize_images_dirname,
     normalize_jsons_dirname,
+    read_draft_config,
     resolve_images_dir,
     resolve_jsons_dir,
     write_json,
@@ -51,7 +53,7 @@ def validate_log_path(dataset_root: str) -> str:
 
 
 #-------------#
-# 目录签名（仅 listdir + stat，不解析标签）
+# 目录签名（scandir 聚合，不解析标签、不拼全量文件名）
 #-------------#
 def build_validate_signature(root: str, jsons_dirname: str, images_dirname: str) -> dict:
     jsons_dirname = normalize_jsons_dirname(jsons_dirname)
@@ -59,36 +61,50 @@ def build_validate_signature(root: str, jsons_dirname: str, images_dirname: str)
     img_dir = resolve_images_dir(root, images_dirname)
     json_dir = resolve_jsons_dir(root, jsons_dirname)
 
-    files = list_label_filenames(json_dir) if os.path.isdir(json_dir) else []
-    parts = []
+    n_labels = 0
     max_mtime = 0.0
     size_sum = 0
-    for fname in files:
-        path = os.path.join(json_dir, fname)
+    # 轻量指纹：数量 + 体积 + 最晚 mtime + 首尾文件名（避免万级文件拼 md5）
+    first_name = ""
+    last_name = ""
+    if os.path.isdir(json_dir):
         try:
-            st = os.stat(path)
-            parts.append(f"{fname}:{st.st_size}:{int(st.st_mtime)}")
-            max_mtime = max(max_mtime, float(st.st_mtime))
-            size_sum += int(st.st_size)
+            with os.scandir(json_dir) as it:
+                for ent in it:
+                    if not ent.is_file():
+                        continue
+                    if Path(ent.name).suffix.lower() not in LABEL_EXTS:
+                        continue
+                    n_labels += 1
+                    if not first_name or ent.name < first_name:
+                        first_name = ent.name
+                    if ent.name > last_name:
+                        last_name = ent.name
+                    try:
+                        st = ent.stat()
+                        max_mtime = max(max_mtime, float(st.st_mtime))
+                        size_sum += int(st.st_size)
+                    except OSError:
+                        pass
         except OSError:
-            parts.append(f"{fname}:?:?")
+            pass
 
     n_images = 0
     if os.path.isdir(img_dir):
         try:
-            for name in os.listdir(img_dir):
-                if Path(name).suffix.lower() in IMG_EXTS and os.path.isfile(
-                    os.path.join(img_dir, name)
-                ):
-                    n_images += 1
+            with os.scandir(img_dir) as it:
+                for ent in it:
+                    if ent.is_file() and Path(ent.name).suffix.lower() in IMG_EXTS:
+                        n_images += 1
         except OSError:
             pass
 
-    fp = hashlib.md5("\n".join(parts).encode("utf-8", errors="ignore")).hexdigest()
+    raw = f"{n_labels}:{size_sum}:{int(max_mtime)}:{first_name}:{last_name}:{n_images}"
+    fp = hashlib.md5(raw.encode("utf-8", errors="ignore")).hexdigest()
     return {
         "images_dirname": images_dirname,
         "jsons_dirname": jsons_dirname,
-        "n_labels": len(files),
+        "n_labels": n_labels,
         "n_images": n_images,
         "labels_fingerprint": fp,
         "labels_mtime_max": max_mtime,
@@ -272,6 +288,68 @@ def _validate_dataset_full(root: str, jsons_dirname: str, images_dirname: str) -
     }
 
 
+def _count_json_stems(dir_path: str) -> int:
+    if not os.path.isdir(dir_path):
+        return 0
+    n = 0
+    try:
+        with os.scandir(dir_path) as it:
+            for ent in it:
+                if ent.is_file() and ent.name.endswith(".json"):
+                    n += 1
+    except OSError:
+        return 0
+    return n
+
+
+def _soft_validate_from_draft(root, jsons_dirname, images_dirname, signature,
+                              options, img_options):
+    """
+    draft 已齐套且 config 带 geometry 时，跳过全量读标签。
+    条件：objects/captions 数量 ≥ 标签数，且 config 目录与当前一致。
+    """
+    cfg = read_draft_config(root) if os.path.isdir(draft_dir(root)) else {}
+    if not cfg:
+        return None
+    if normalize_jsons_dirname(cfg.get("jsons_dirname") or "") != jsons_dirname:
+        return None
+    if normalize_images_dirname(cfg.get("images_dirname") or "") != images_dirname:
+        return None
+    geom = (cfg.get("geometry") or "").strip().lower()
+    if geom not in {"rectangle", "polygon", "mixed"}:
+        return None
+    n_labels = int(signature.get("n_labels") or 0)
+    if n_labels < 1:
+        return None
+    n_obj = _count_json_stems(os.path.join(draft_dir(root), "objects"))
+    n_cap = _count_json_stems(os.path.join(draft_dir(root), "captions"))
+    if n_obj < n_labels or n_cap < n_labels:
+        return None
+    img_dir = resolve_images_dir(root, images_dirname)
+    if not os.path.isdir(img_dir):
+        return None
+    return {
+        "ok": True,
+        "geometry": geom,
+        "jsons_dirname": jsons_dirname,
+        "images_dirname": images_dirname,
+        "jsons_options": options,
+        "images_options": img_options,
+        "errors": [],
+        "stats": {
+            "n_json": n_labels,
+            "n_images_matched": int(signature.get("n_images") or 0),
+            "n_shapes": 0,
+            "n_rectangle": 0,
+            "n_polygon": 0,
+            "n_objects_draft": n_obj,
+            "n_captions_draft": n_cap,
+        },
+        "from_cache": True,
+        "cache_path": "draft/config+objects+captions",
+    }
+
+
 #-------------#
 # 校验数据集（优先 draft/validate_log.json）
 #-------------#
@@ -283,7 +361,10 @@ def validate_dataset(root: str, jsons_dirname: str = "jsons",
        jsons_options, from_cache}
     geometry: 'rectangle' | 'polygon' | 'mixed' | None
 
-    force=False：若 draft/validate_log.json 签名未变，直接复用，避免全量读标签。
+    force=False：
+      1) draft/validate_log.json 签名未变 → 复用
+      2) draft 已齐套且 config 有 geometry → 软通过（不扫标签）
+      3) 否则全量校验并写 log
     """
     jsons_dirname = normalize_jsons_dirname(jsons_dirname)
     images_dirname = normalize_images_dirname(images_dirname)
@@ -320,6 +401,16 @@ def validate_dataset(root: str, jsons_dirname: str = "jsons",
             cached["jsons_dirname"] = jsons_dirname
             cached["images_dirname"] = images_dirname
             return cached
+
+        soft = _soft_validate_from_draft(
+            root, jsons_dirname, images_dirname, signature, options, img_options,
+        )
+        if soft is not None:
+            try:
+                _write_validate_log(root, signature, soft)
+            except Exception:
+                pass
+            return soft
 
     result = _validate_dataset_full(root, jsons_dirname, images_dirname)
     try:

@@ -52,16 +52,53 @@ def list_json_stems(dataset_root, limit=None, jsons_dirname="jsons"):
 #-------------#
 # 评估 draft 缺口
 #-------------#
-def assess_draft(dataset_root, limit=None, jsons_dirname="jsons", geometry=None) -> dict:
+def _listdir_stems(dir_path, suffix=".json"):
+    if not os.path.isdir(dir_path):
+        return []
+    out = []
+    try:
+        with os.scandir(dir_path) as it:
+            for ent in it:
+                if ent.is_file() and ent.name.endswith(suffix):
+                    out.append(Path(ent.name).stem)
+    except OSError:
+        return []
+    out.sort()
+    return out
+
+
+def _desc_counts_by_stem(desc_dir):
+    """stem -> 描述文件数（一次 scandir，不读内容）。"""
+    counts = {}
+    if not os.path.isdir(desc_dir):
+        return counts
+    try:
+        with os.scandir(desc_dir) as it:
+            for ent in it:
+                if not ent.is_file() or not ent.name.endswith(".json"):
+                    continue
+                # {stem}_obj0001.json
+                base = ent.name[:-5]
+                if "_obj" not in base:
+                    continue
+                stem = base.rsplit("_obj", 1)[0]
+                counts[stem] = counts.get(stem, 0) + 1
+    except OSError:
+        return {}
+    return counts
+
+
+def assess_draft(dataset_root, limit=None, jsons_dirname="jsons", geometry=None,
+                 deep: bool = True) -> dict:
     """
     缺啥补啥评估。不传 force：已有非占位结果视为完成。
+    deep=False：打开数据集快速路径——只做文件存在性统计，不逐文件解析
+                 JSON / 不跑 captions_need_rebuild（预生成齐套时可从几十秒降到秒级）。
     Returns:
       need_crop, need_describe, need_caption, ready, missing_* counts, stages[]
     """
     sys.path.insert(0, os.path.dirname(__file__))
-    from caption import captions_need_rebuild
     from common import draft_dir, normalize_jsons_dirname, read_draft_config
-    from describe import is_placeholder_desc
 
     jsons_dirname = normalize_jsons_dirname(jsons_dirname)
     stems = list_json_stems(dataset_root, limit=limit, jsons_dirname=jsons_dirname)
@@ -69,17 +106,21 @@ def assess_draft(dataset_root, limit=None, jsons_dirname="jsons", geometry=None)
     desc_dir = os.path.join(draft_dir(dataset_root), "descriptions")
     cap_dir = os.path.join(draft_dir(dataset_root), "captions")
 
-    missing_objects = []
-    for stem in stems:
-        if not os.path.isfile(os.path.join(obj_dir, f"{stem}.json")):
-            missing_objects.append(stem)
+    obj_stems = _listdir_stems(obj_dir)
+    if limit:
+        keep = set(stems)
+        obj_stems = [s for s in obj_stems if s in keep]
+    cap_stems_set = set(_listdir_stems(cap_dir))
+    obj_stems_set = set(obj_stems)
+
+    missing_objects = [s for s in stems if s not in obj_stems_set]
 
     # 标签目录 / 几何属性切换后需重裁，才能让主窗口画正确的框/多边形
     draft_cfg = read_draft_config(dataset_root) if os.path.isdir(draft_dir(dataset_root)) else {}
     prev_jsons = normalize_jsons_dirname(draft_cfg.get("jsons_dirname") or "")
     prev_geom = (draft_cfg.get("geometry") or "").strip().lower()
     cur_geom = (geometry or "").strip().lower()
-    has_objects = bool(os.path.isdir(obj_dir) and any(Path(obj_dir).glob("*.json")))
+    has_objects = bool(obj_stems)
     source_mismatch = bool(
         has_objects and prev_jsons and prev_jsons != jsons_dirname
     )
@@ -89,29 +130,44 @@ def assess_draft(dataset_root, limit=None, jsons_dirname="jsons", geometry=None)
     force_crop = source_mismatch or geometry_mismatch
     need_crop = bool(missing_objects) or force_crop
 
-    # describe / caption：看已有 objects（含本次会 crop 出的目标，用 json stems 近似）
-    # 对已有 objects 逐个检查；若尚无 objects 则 need_describe/caption 也为 True
     missing_desc = 0
     missing_cap = 0
-    obj_stems = sorted(Path(p).stem for p in Path(obj_dir).glob("*.json")) if os.path.isdir(obj_dir) else []
     check_stems = obj_stems if obj_stems else []
 
-    for stem in check_stems:
-        with open(os.path.join(obj_dir, f"{stem}.json"), encoding="utf-8") as f:
-            meta = json.load(f)
-        for obj in meta.get("objects") or []:
-            oid = obj["obj_id"]
-            path = os.path.join(desc_dir, f"{stem}_obj{oid:04d}.json")
-            if not os.path.isfile(path):
+    if not deep:
+        # 快速：caption 缺文件即算缺；describe 用「每图至少有描述文件」+
+        # 描述总数与目标文件数的粗检（不打开 objects/desc 内容）
+        desc_counts = _desc_counts_by_stem(desc_dir)
+        for stem in check_stems:
+            if stem not in cap_stems_set:
+                missing_cap += 1
+            n_desc = desc_counts.get(stem, 0)
+            if n_desc < 1:
                 missing_desc += 1
-                continue
-            with open(path, encoding="utf-8") as f:
-                desc = json.load(f)
-            if is_placeholder_desc(desc):
-                missing_desc += 1
+        # 若描述文件总数明显偏少（多目标图），标 need_describe，触发后续补齐
+        n_desc_files = sum(desc_counts.values())
+        if check_stems and n_desc_files < len(check_stems):
+            missing_desc = max(missing_desc, len(check_stems) - n_desc_files)
+    else:
+        from caption import captions_need_rebuild
+        from describe import is_placeholder_desc
 
-        if captions_need_rebuild(dataset_root, stem):
-            missing_cap += 1
+        for stem in check_stems:
+            with open(os.path.join(obj_dir, f"{stem}.json"), encoding="utf-8") as f:
+                meta = json.load(f)
+            for obj in meta.get("objects") or []:
+                oid = obj["obj_id"]
+                path = os.path.join(desc_dir, f"{stem}_obj{oid:04d}.json")
+                if not os.path.isfile(path):
+                    missing_desc += 1
+                    continue
+                with open(path, encoding="utf-8") as f:
+                    desc = json.load(f)
+                if is_placeholder_desc(desc):
+                    missing_desc += 1
+
+            if captions_need_rebuild(dataset_root, stem):
+                missing_cap += 1
 
     # LLM 阶段仅看 draft 缺口；force_crop 本身不强制重跑 describe/caption（避免离线误触 vLLM）
     # 尚无 objects 时：crop 后必需要 LLM，先标上以便进度展示（真正 health_check 仍在 run_generate）
@@ -146,6 +202,7 @@ def assess_draft(dataset_root, limit=None, jsons_dirname="jsons", geometry=None)
         "prev_jsons_dirname": prev_jsons or None,
         "geometry": cur_geom or None,
         "prev_geometry": prev_geom or None,
+        "deep": bool(deep),
     }
 
 

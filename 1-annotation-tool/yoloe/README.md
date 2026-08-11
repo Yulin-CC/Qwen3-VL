@@ -69,7 +69,7 @@ yoloe/
 
 ### 2.3 Windows 便携包（无本机 Python）
 
-1. 维护者双击 `build/一键打包.bat`，产物在 `build/0-dist/GroundingReview-portable-*.zip`（当前示例：`v0.3.11`）
+1. 维护者双击 `build/一键打包.bat`，产物在 `build/0-dist/GroundingReview-portable-*.zip`（当前示例：`v0.3.13`）
 2. 同事解压后双击 `start.bat` → 浏览器打开 `http://localhost:8090`（端口占用时自动 +1）
 3. 详细说明见 `build/使用说明.txt`
 

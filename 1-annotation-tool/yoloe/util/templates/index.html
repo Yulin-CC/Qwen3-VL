@@ -1259,7 +1259,10 @@ async function reloadImages(){
   images.forEach(img => {
     const d = document.createElement('div');
     d.className = 'img-item' + (img.exported ? ' exported' : '') + (img.stem===curStem?' active':'');
-    d.innerHTML = `<div><span class="dot"></span>${img.stem}</div><div class="meta">${img.n_captions} captions${img.exported?' · exported':''}</div>`;
+    const capMeta = (img.n_captions == null || img.n_captions < 0)
+      ? 'captions'
+      : `${img.n_captions} captions`;
+    d.innerHTML = `<div><span class="dot"></span>${img.stem}</div><div class="meta">${capMeta}${img.exported?' · exported':''}</div>`;
     d.onclick = () => loadStem(img.stem);
     sb.appendChild(d);
   });
@@ -1305,25 +1308,43 @@ function usedPhraseSets(cap){
 
 const PHRASE_DISPLAY_LIMIT = 3;
 
-/** 每个目标固定展示 3 条：当前 caption 已选优先，再补其余 */
+/**
+ * 每个目标固定展示最多 3 条：保持 descriptions 原顺序，点亮/点灭不重排。
+ * 若超过 3 条且已选落在窗口外，用已选替换窗口内未选项（尽量少动）。
+ */
 function pickDisplayPhrases(phrases, zhList, usedSet){
   const usedLower = new Set([...(usedSet || [])].map(s => String(s).toLowerCase()));
-  const rows = (phrases || []).map((ph, i) => ({
-    ph: normPhrase(ph),
-    zh: (zhList && zhList[i]) ? String(zhList[i]) : '',
-    idx: i,
-  })).filter(r => r.ph);
-  const selected = [];
-  const rest = [];
+  const rows = [];
   const seen = new Set();
-  rows.forEach(r => {
-    const k = r.ph.toLowerCase();
+  (phrases || []).forEach((ph, i) => {
+    const n = normPhrase(ph);
+    if (!n) return;
+    const k = n.toLowerCase();
     if (seen.has(k)) return;
     seen.add(k);
-    if (usedLower.has(k)) selected.push(r);
-    else rest.push(r);
+    rows.push({
+      ph: n,
+      zh: (zhList && zhList[i]) ? String(zhList[i]) : '',
+      idx: i,
+    });
   });
-  return [...selected, ...rest].slice(0, PHRASE_DISPLAY_LIMIT);
+  if (rows.length <= PHRASE_DISPLAY_LIMIT) return rows;
+  const head = rows.slice(0, PHRASE_DISPLAY_LIMIT);
+  const headKeys = new Set(head.map(r => r.ph.toLowerCase()));
+  const missingSel = rows.filter(
+    r => usedLower.has(r.ph.toLowerCase()) && !headKeys.has(r.ph.toLowerCase())
+  );
+  if (!missingSel.length) return head;
+  const out = head.slice();
+  missingSel.forEach(m => {
+    let rep = -1;
+    for (let i = out.length - 1; i >= 0; i--){
+      if (!usedLower.has(out[i].ph.toLowerCase())){ rep = i; break; }
+    }
+    if (rep < 0) return;
+    out[rep] = m;
+  });
+  return out;
 }
 
 /**
@@ -1361,8 +1382,9 @@ function syncActiveCaptionPhrasesToRight(cap){
     const have = new Set(phrases.map(p => p.toLowerCase()));
     const missing = [...selected].filter(ph => !have.has(ph.toLowerCase()));
     if (missing.length){
-      desc.phrases = [...missing, ...phrases];
-      desc.zh = [...missing.map(() => ''), ...zhList];
+      // 缺条目补在末尾，避免点亮时把已有芯片顺序顶乱
+      desc.phrases = [...phrases, ...missing];
+      desc.zh = [...zhList, ...missing.map(() => '')];
       item.descriptions[key] = desc;
       changed = true;
     } else {
@@ -1433,6 +1455,62 @@ function syncPhraseTokens(cap){
   });
 }
 
+let captionRefreshTimer = null;
+let captionRefreshToken = 0;
+
+function invalidateCaptionRefresh(){
+  captionRefreshToken++;
+  if (captionRefreshTimer){
+    clearTimeout(captionRefreshTimer);
+    captionRefreshTimer = null;
+  }
+}
+
+/** 点选用后即时反馈；caption LLM 刷新防抖，避免连点被当成未响应 */
+function scheduleActiveCaptionRefresh(){
+  const token = ++captionRefreshToken;
+  if (captionRefreshTimer) clearTimeout(captionRefreshTimer);
+  captionRefreshTimer = setTimeout(async () => {
+    captionRefreshTimer = null;
+    if (!curStem || !item) return;
+    const caps = item.captions.captions || [];
+    const active = caps[activeCap];
+    if (!active) return;
+
+    const ok = await saveIfDirty();
+    if (!ok || token !== captionRefreshToken) return;
+
+    // 一个都没选：caption 置空并保存，绝不触发会重抽/删除的逻辑
+    if (!(active.phrases && active.phrases.length)){
+      clearCaptionText(active);
+      markDirty();
+      await saveIfDirty();
+      if (token !== captionRefreshToken) return;
+      renderAll();
+      setStatus('caption 已清空（请选择目标描述）');
+      return;
+    }
+
+    setStatus('正在生成 caption…');
+    const sid = activeCap;
+    const res = await api(
+      `/api/refresh_caption/${encodeURIComponent(curStem)}/${sid}`,
+      {method:'POST'}
+    );
+    if (token !== captionRefreshToken) return;
+    if (res.error){
+      alert('caption 自动刷新失败：\n' + res.error);
+      setStatus('caption 刷新失败');
+      return;
+    }
+    item.captions = res.captions;
+    dirty = false;
+    renderAll();
+    ensureZhAsync(curStem);
+    setStatus(`captions${sid + 1} 已刷新`);
+  }, 220);
+}
+
 async function toggleObjPhrase(oid, phraseIdx){
   if (!item) return;
   const caps = item.captions.captions || [];
@@ -1458,47 +1536,19 @@ async function toggleObjPhrase(oid, phraseIdx){
     } else {
       active.caption = stripPhraseFromCaption(active.caption, phrase);
     }
-    setStatus(`取消选用: ${phrase} · 刷新 caption…`);
+    setStatus(`已取消选用: ${phrase}`);
   } else {
     if (!active.obj_ids.includes(oid)) active.obj_ids.push(oid);
     active.phrases.push({ obj_id: oid, phrase, tokens_positive: null });
     active.caption = appendPhraseToCaption(active.caption, phrase);
-    setStatus(`选中: ${phrase} · 刷新 caption…`);
+    setStatus(`已选中: ${phrase}`);
   }
   // 防御：确保当前目标仍在关联列表（避免历史逻辑误删后卡片消失）
   if (!active.obj_ids.includes(oid)) active.obj_ids.push(oid);
   syncPhraseTokens(active);
   markDirty();
   renderAll();
-
-  const ok = await saveIfDirty();
-  if (!ok) return;
-  if (!curStem) return;
-
-  // 一个都没选：caption 置空并保存，绝不触发会重抽/删除的逻辑
-  if (!(active.phrases && active.phrases.length)){
-    clearCaptionText(active);
-    markDirty();
-    await saveIfDirty();
-    renderAll();
-    setStatus(`已取消选用: ${phrase} · caption 已清空（请选择目标描述）`);
-    return;
-  }
-
-  const res = await api(
-    `/api/refresh_caption/${encodeURIComponent(curStem)}/${activeCap}`,
-    {method:'POST'}
-  );
-  if (res.error){
-    alert('caption 自动刷新失败：\n' + res.error);
-    setStatus((already ? '取消选用' : '选中') + `: ${phrase} · caption 刷新失败`);
-    return;
-  }
-  item.captions = res.captions;
-  dirty = false;
-  renderAll();
-  ensureZhAsync(curStem);
-  setStatus((already ? '已取消选用' : '选中') + `: ${phrase} · caption 已刷新`);
+  scheduleActiveCaptionRefresh();
 }
 
 function mergeDescriptionsFromServer(serverDescs){
@@ -1585,6 +1635,7 @@ async function loadStem(stem){
     const ok = await saveIfDirty();
     if (!ok) return;
   }
+  invalidateCaptionRefresh();
   curStem = stem;
   dirty = false;
   highlightObjId = null;
@@ -1623,6 +1674,7 @@ async function selectCap(i){
   }
   const ok = await saveIfDirty();
   if (!ok) return;
+  invalidateCaptionRefresh();
   activeCap = i;
   highlightObjId = null;
   renderAll();

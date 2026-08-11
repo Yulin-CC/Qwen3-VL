@@ -321,23 +321,38 @@ def index():
     return render_template("index.html")
 
 
+def _isdir_quick(path: str, timeout: float = 0.35) -> bool:
+    """带超时的 isdir，避免网络盘/卡住盘符把选夹按钮拖死。"""
+    if not path:
+        return False
+    box = {"ok": False}
+
+    def _run():
+        try:
+            box["ok"] = os.path.isdir(path)
+        except Exception:
+            box["ok"] = False
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout)
+    return bool(box["ok"]) if not t.is_alive() else False
+
+
 def _default_browse_root() -> str:
-    """未指定 path 时的浏览起点：有 /home/yulin 用它，否则用用户主目录（兼容 Windows）。"""
-    candidates = []
-    if os.name != "nt":
-        candidates.append("/home/yulin")
+    """未指定 path 时的浏览起点：优先用户主目录，盘符探测带超时。"""
     home = os.path.expanduser("~")
-    if home:
-        candidates.append(home)
-    # Windows 常见盘符兜底；POSIX 用 /
-    if os.name == "nt":
-        for drive in ("C:\\", "D:\\", "E:\\"):
-            candidates.append(drive)
-    else:
-        candidates.append("/")
-    for cand in candidates:
-        if cand and os.path.isdir(cand):
-            return os.path.realpath(cand)
+    if home and _isdir_quick(home, 0.5):
+        return os.path.realpath(home)
+    if os.name != "nt":
+        for cand in ("/home/yulin", "/"):
+            if _isdir_quick(cand, 0.35):
+                return os.path.realpath(cand)
+        return os.getcwd()
+    # Windows：不要同步死等 D:/E: 网络盘
+    for drive in ("C:\\", "D:\\", "E:\\"):
+        if _isdir_quick(drive, 0.25):
+            return drive
     return os.getcwd()
 
 
@@ -364,29 +379,45 @@ def _normalize_user_path(raw: str) -> str:
     return p
 
 
-def _probe_dir(req_path: str) -> dict:
-    """目录探测结果（供网页浏览 / 原生选夹共用）。"""
+def _probe_dir(req_path: str, *, light: bool = False) -> dict:
+    """目录探测结果（供网页浏览 / 原生选夹共用）。
+
+    light=True：浏览导航用——不扫任意子目录找图、不解析标签几何（避免大盘卡顿）。
+    """
     req_path = os.path.realpath(req_path)
     if not os.path.isdir(req_path):
         return {"error": f"不是有效目录: {req_path}"}
     entries = []
     try:
-        for name in sorted(os.listdir(req_path)):
-            if not _safe_dir_name(name):
-                continue
-            full = os.path.join(req_path, name)
-            if os.path.isdir(full):
-                entries.append({"name": name, "type": "dir", "path": full})
+        # scandir 比 listdir+isdir 快；子目录名排序在收集后做
+        dirs = []
+        with os.scandir(req_path) as it:
+            for ent in it:
+                if not ent.is_dir(follow_symlinks=False):
+                    continue
+                if not _safe_dir_name(ent.name):
+                    continue
+                dirs.append(ent.name)
+        for name in sorted(dirs):
+            entries.append({
+                "name": name,
+                "type": "dir",
+                "path": os.path.join(req_path, name),
+            })
     except PermissionError:
         return {"error": "无读取权限"}
     parent_path = str(Path(req_path).parent)
     parent = None if parent_path == req_path else parent_path
-    jsons_options = list_jsons_options(req_path)
-    img_root, img_dir, images_dirname = resolve_images_root(req_path)
+    # 浏览时不必枚举 jsons 候选；选夹确认时再取
+    jsons_options = [] if light else list_jsons_options(req_path)
+    img_root, img_dir, images_dirname = resolve_images_root(
+        req_path, deep=not light,
+    )
     label_ok = dir_has_label_jsons(req_path)
     geometry = None
-    if label_ok:
-        geometry = detect_geometry(req_path).get("geometry")
+    if label_ok and not light:
+        # 选夹确认：只抽很少样本判几何，完整校验交给 openDataset
+        geometry = detect_geometry(req_path, sample_limit=5).get("geometry")
     return {
         "current": req_path,
         "parent": parent,
@@ -398,6 +429,7 @@ def _probe_dir(req_path: str) -> dict:
         "images_dirname": images_dirname,
         "has_label_jsons": label_ok,
         "geometry": geometry,
+        "light": bool(light),
     }
 
 
@@ -485,7 +517,10 @@ else:
 def browse():
     raw = _normalize_user_path(request.args.get("path") or "")
     req_path = raw or _default_browse_root()
-    info = _probe_dir(req_path)
+    # 默认 light：翻目录不深探；确认前可 ?light=0
+    light_q = (request.args.get("light") or "1").strip().lower()
+    light = light_q not in {"0", "false", "no"}
+    info = _probe_dir(req_path, light=light)
     if info.get("error"):
         code = 403 if info["error"] == "无读取权限" else 400
         return jsonify(info), code
@@ -858,7 +893,9 @@ def generate_start():
         force=bool(force),
     )
     if validation.get("from_cache"):
-        _gen_log("校验命中 draft/validate_log.json，跳过全量扫描")
+        _gen_log(
+            f"校验快速通过（{validation.get('cache_path') or 'cache'}），跳过全量读标签"
+        )
     else:
         _gen_log("校验完成，已写入 draft/validate_log.json")
     if not validation.get("ok"):
@@ -883,7 +920,10 @@ def generate_start():
         "validate", "done", pct=100,
         detail=f"通过 · {geom or '?'} · {cache_tag}",
     )
-    assessment = assess_draft(root, jsons_dirname=jsons_dirname, geometry=geom)
+    # 打开/续跑：快速评估（不逐文件深扫）；重新生成仍 deep 精检
+    assessment = assess_draft(
+        root, jsons_dirname=jsons_dirname, geometry=geom, deep=bool(force),
+    )
     if force:
         stages = list(assessment.get("stages") or [])
         for s in ("describe", "caption"):
@@ -993,19 +1033,38 @@ def generate_status():
 
 @app.route("/api/images")
 def images():
+    """列表：只 scandir，不逐张读 caption（打开大数据集时差一个数量级）。"""
     if not _root():
         return jsonify([])
-    gd_dir = os.path.join(_root(), "jsons-GD")
+    root = _root()
+    gd_dir = os.path.join(root, "jsons-GD")
+    cap_dir = os.path.join(draft_dir(root), "captions")
+    exported = set()
+    if os.path.isdir(gd_dir):
+        try:
+            with os.scandir(gd_dir) as it:
+                for ent in it:
+                    if ent.is_file() and ent.name.endswith(".json"):
+                        exported.add(Path(ent.name).stem)
+        except OSError:
+            pass
+    has_cap = set()
+    if os.path.isdir(cap_dir):
+        try:
+            with os.scandir(cap_dir) as it:
+                for ent in it:
+                    if ent.is_file() and ent.name.endswith(".json"):
+                        has_cap.add(Path(ent.name).stem)
+        except OSError:
+            pass
     result = []
     for stem in list_stems():
-        cap = load_json(os.path.join(draft_dir(_root()), "captions", f"{stem}.json"), {})
-        n_cap = len(cap.get("captions", [])) if cap else 0
-        exported = os.path.isfile(os.path.join(gd_dir, f"{stem}.json"))
         result.append({
             "stem": stem,
-            "name": (cap or {}).get("image") or f"{stem}.jpg",
-            "n_captions": n_cap,
-            "exported": exported,
+            "name": f"{stem}.jpg",
+            # 列表不解析条数；有 caption 文件则标 -1 让前端显示「captions」
+            "n_captions": -1 if stem in has_cap else 0,
+            "exported": stem in exported,
         })
     return jsonify(result)
 
