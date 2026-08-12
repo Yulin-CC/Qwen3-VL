@@ -20,7 +20,7 @@ param(
   [switch]$SkipPythonInstall,
   [switch]$ForcePip,
   [switch]$SkipZip,
-  [string]$VersionTag = "v0.3.13"
+  [string]$VersionTag = "v0.3.24"
 )
 
 $ErrorActionPreference = "Stop"

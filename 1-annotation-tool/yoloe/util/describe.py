@@ -8,6 +8,7 @@
 import argparse
 import json
 import os
+import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -29,8 +30,11 @@ from vllm_client import VLLMClient, extract_json_object
 # 短系统提示（完整规则仍由 load_rules / rules_io 注入 user prompt）
 SYSTEM_PROMPT = (
     "You describe ONE object for visual grounding. "
-    "Output JSON only: {\"phrases\":[...]} with >=3 short English noun phrases "
-    "(attribute / appearance / action). No markdown, no thinking."
+    "The given class label is GROUND TRUTH: every phrase must stay in that class "
+    "(never swap car↔motorcycle, etc.). "
+    "Output JSON only: {\"phrases\":[...]} with short English noun phrases. "
+    "Vary axes (subtype, appearance, action/state, location, partial feature); "
+    "each phrase uses only 1–2 axes. No markdown, no thinking."
 )
 
 
@@ -39,11 +43,24 @@ def load_rules(scene: str = None) -> str:
     return load_describe_rules(scene)
 
 
+def label_natural_reading(label: str) -> str:
+    """specialvehicle / hard_hat → special vehicle / hard hat，供 prompt 提示。"""
+    raw = (label or "").strip()
+    if not raw:
+        return "object"
+    s = re.sub(r"[_\-]+", " ", raw)
+    s = re.sub(r"([a-z])([A-Z])", r"\1 \2", s)
+    s = re.sub(r"([A-Za-z])(\d)", r"\1 \2", s)
+    s = re.sub(r"\s+", " ", s).strip().lower()
+    return s or raw.lower()
+
+
 def fallback_phrases(label: str):
+    hint = label_natural_reading(label)
     return [
         label,
-        f"{label} object",
-        f"{label} in the scene",
+        hint if hint != (label or "").strip().lower() else f"{label} object",
+        f"{hint} in the scene",
     ]
 
 
@@ -68,22 +85,37 @@ def is_placeholder_desc(desc) -> bool:
 
 
 def describe_object(client: VLLMClient, crop_abs: str, label: str, rules: str = "",
-                    avoid_phrases=None, min_phrases=3, with_zh: bool = False,
-                    max_retries: int = 3):
+                    avoid_phrases=None, min_phrases=6, with_zh: bool = False,
+                    max_retries: int = 3, seed_phrases=None):
     # 规则全文进 user prompt（与 caption 一致）；任务指令置后
     # with_zh=True：同一次视觉调用带回中文，避免刷新后再串行翻译
+    # seed_phrases：围绕已选「接近但不贴切」的短语生成更贴切变体
     avoid = [
         str(p).strip() for p in (avoid_phrases or [])
         if isinstance(p, str) and str(p).strip()
     ]
-    need = max(1, int(min_phrases or 3))
+    seeds = [
+        str(p).strip() for p in (seed_phrases or [])
+        if isinstance(p, str) and str(p).strip()
+    ]
+    need = max(1, int(min_phrases or 6))
     retries = max(1, int(max_retries or 1))
     avoid_line = ""
     if avoid:
-        listed = "; ".join(avoid[:12])
+        listed = "; ".join(avoid[:16])
         avoid_line = (
             f"Do NOT reuse or lightly paraphrase these already-used phrases: {listed}.\n"
             f"Prefer clearly different attributes / viewpoints / wording.\n"
+        )
+    seed_line = ""
+    if seeds:
+        listed = "; ".join(seeds[:8])
+        seed_line = (
+            f"The annotator kept these as closest-but-not-precise enough: {listed}.\n"
+            f"Write up to {need} NEW short English noun phrases that stay CLOSE to them "
+            f"(same object / same key attributes) but are more precise or better wording.\n"
+            f"Return whatever you can; do NOT pad with low-quality fillers.\n"
+            f"Do NOT repeat the kept phrases verbatim.\n"
         )
     if with_zh:
         example = (
@@ -94,15 +126,37 @@ def describe_object(client: VLLMClient, crop_abs: str, label: str, rules: str = 
             "Also provide Simplified Chinese for each phrase in parallel array \"zh\" "
             "(same count/order).\n"
         )
-        max_tokens = 384
+        max_tokens = 512
     else:
         example = '{"phrases":["blue scooter","two-wheeled vehicle","parked scooter"]}'
         zh_line = ""
-        max_tokens = 256
+        max_tokens = 384
+    hint = label_natural_reading(label)
+    cover_line = (
+        f"Write up to {need} short English noun phrases that stay close to the seed phrases above; "
+        f"still keep each phrase to 1–2 attribute axes only. "
+        f"Fewer is OK if the crop is limited — do not pad.\n"
+        if seeds else
+        f"Write up to {need} short English noun phrases (fewer is OK; do not pad). "
+        f"Across the set, diversify these axes when visible: "
+        f"(1) subtype/role (2) appearance/color (3) action/state "
+        f"(4) location (5) partial feature. "
+        f"Each single phrase must combine only 1–2 axes "
+        f"(e.g. red car; car on the road; car with sunroof); "
+        f"do NOT stack three or more modifiers in one phrase.\n"
+    )
     task = (
-        f"Class label: {label}\n"
-        f"Write AT LEAST {need} short English noun phrases covering: "
-        f"(1) subtype/role (2) appearance/color (3) action/state.\n"
+        f"Class label (GROUND TRUTH): {label}\n"
+        f"Natural reading of label: {hint}\n"
+        f"CRITICAL: Every phrase MUST describe this class only. "
+        f"Do NOT rename it to another category even if the crop looks similar "
+        f"(e.g. label=car → never motorcycle/bike/scooter; "
+        f"label=specialvehicle → special/utility/engineering vehicle, not private car or motorcycle). "
+        f"Subtype words are OK only within the same class family "
+        f"(car→sedan/SUV/taxi OK).\n"
+        f"{seed_line}"
+        f"{cover_line}"
+        f"Prefer keeping a class-family head noun in the phrases.\n"
         f"{avoid_line}"
         f"{zh_line}"
         f"Follow the rules above when they apply.\n"
@@ -139,11 +193,10 @@ def describe_object(client: VLLMClient, crop_abs: str, label: str, rules: str = 
                     else:
                         kept_zh.append("")
                 phrases, zh_raw = kept_ph, kept_zh
-            if len(phrases) < need:
-                raise ValueError(f"模型返回短语不足 {need} 条: {phrases}")
-            # 审阅侧固定展示 3 条；批量生成仍可只取 need
-            take = max(need, 3) if not with_zh else max(need, min(3, len(phrases)))
-            phrases = phrases[:take]
+            # 有多少用多少：不强制凑满 need；至少 1 条即可落盘
+            if len(phrases) < 1:
+                raise ValueError(f"模型未返回有效短语: {data}")
+            phrases = phrases[:need]
             zh = []
             if with_zh:
                 for i in range(len(phrases)):
@@ -164,8 +217,8 @@ def describe_object(client: VLLMClient, crop_abs: str, label: str, rules: str = 
 
 
 def describe_one_object(dataset_root, stem, obj_id, client: VLLMClient, rules: str = "",
-                        write: bool = True, avoid_phrases=None, min_phrases=3,
-                        with_zh: bool = False, max_retries: int = 3):
+                        write: bool = True, avoid_phrases=None, min_phrases=6,
+                        with_zh: bool = False, max_retries: int = 3, seed_phrases=None):
     """生成单目标描述。write=False 时只返回结果，由调用方决定是否落盘（避免半成品覆盖）。"""
     obj_path = os.path.join(draft_dir(dataset_root), "objects", f"{stem}.json")
     with open(obj_path, encoding="utf-8") as f:
@@ -177,7 +230,7 @@ def describe_one_object(dataset_root, stem, obj_id, client: VLLMClient, rules: s
     desc = describe_object(
         client, crop_abs, obj["label"], rules,
         avoid_phrases=avoid_phrases, min_phrases=min_phrases,
-        with_zh=with_zh, max_retries=max_retries,
+        with_zh=with_zh, max_retries=max_retries, seed_phrases=seed_phrases,
     )
     desc["obj_id"] = obj_id
     desc["stem"] = stem

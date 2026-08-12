@@ -25,7 +25,7 @@ from common import (
     list_jsons_options,
     normalize_images_dirname,
     normalize_jsons_dirname,
-    phrase_token_span,
+    assign_phrase_token_spans,
     read_draft_config,
     resolve_images_dir,
     resolve_images_root,
@@ -1179,11 +1179,10 @@ def save_item(stem):
                 sent["zh"] = ""
                 continue
             caption = sent.get("caption", "")
-            for ph in phrases:
+            spans = assign_phrase_token_spans(caption, phrases)
+            for ph, span in zip(phrases, spans):
                 if isinstance(ph, dict):
-                    ph["tokens_positive"] = phrase_token_span(
-                        caption, ph.get("phrase", "")
-                    )
+                    ph["tokens_positive"] = span
         write_json(os.path.join(draft_dir(_root()), "captions", f"{stem}.json"), caps)
     return jsonify({"ok": True})
 
@@ -1192,7 +1191,10 @@ def save_item(stem):
 def refresh_desc(stem, obj_id):
     """刷新单个目标描述；失败时不覆盖已有 draft。
 
-    若 body 带 sentence_id：保留该 caption 已选用短语，只重刷其余空位（合计最多 3 条）。
+    若 body 带 sentence_id：保留该 caption 已选用短语。
+    有保留时：最多 2 条围绕已选生成（更贴切），其余空位走多样化；合计最多 6 条。
+    无保留时：整组重刷，目标最多 6 条。
+    模型返回不足目标数时按实际条数更新，不强制凑满。
     """
     if not _root():
         return jsonify({"error": "未配置数据集"}), 400
@@ -1218,6 +1220,9 @@ def refresh_desc(stem, obj_id):
             for ph in sents[sentence_id].get("phrases") or []:
                 if not isinstance(ph, dict) or ph.get("obj_id") != obj_id:
                     continue
+                # 「保留源标签」不是描述候选，刷新时不作为 keep/around 种子
+                if ph.get("keep_source_label"):
+                    continue
                 p = (ph.get("phrase") or "").strip()
                 if p and p not in keep:
                     keep.append(p)
@@ -1225,13 +1230,16 @@ def refresh_desc(stem, obj_id):
             for ph in sent.get("phrases") or []:
                 if not isinstance(ph, dict) or ph.get("obj_id") != obj_id:
                     continue
+                if ph.get("keep_source_label"):
+                    continue
                 p = (ph.get("phrase") or "").strip()
                 if p and p not in avoid:
                     avoid.append(p)
 
-        DISPLAY_N = 3
+        DISPLAY_N = 6
+        AROUND_N = 2
         keep = keep[:DISPLAY_N]
-        n_new = max(0, DISPLAY_N - len(keep)) if keep else DISPLAY_N
+        slots = max(0, DISPLAY_N - len(keep)) if keep else DISPLAY_N
         old_phrases = (old or {}).get("phrases") or []
         old_zh = (old or {}).get("zh") or []
         old_zh_map = {}
@@ -1259,7 +1267,24 @@ def refresh_desc(stem, obj_id):
                     out[i] = filled[j] if j < len(filled) else ""
             return out
 
-        if keep and n_new == 0:
+        def _take_fresh(result, ban_l, n):
+            out_p, out_zh = [], []
+            if n <= 0:
+                return out_p, out_zh
+            zh_all = list(result.get("zh") or [])
+            for i, p in enumerate(result.get("phrases") or []):
+                if not isinstance(p, str) or not p.strip():
+                    continue
+                if p.lower() in ban_l:
+                    continue
+                out_p.append(p)
+                out_zh.append(zh_all[i] if i < len(zh_all) and isinstance(zh_all[i], str) else "")
+                ban_l.add(p.lower())
+                if len(out_p) >= n:
+                    break
+            return out_p, out_zh
+
+        if keep and slots == 0:
             r = dict(old or {})
             r["obj_id"] = obj_id
             r["stem"] = stem
@@ -1268,40 +1293,61 @@ def refresh_desc(stem, obj_id):
             r["label"] = (old or {}).get("label") or r.get("label") or ""
             write_json(desc_path, r)
             return jsonify({
-                "ok": True, "description": r, "kept": keep, "refreshed": [],
+                "ok": True, "description": r, "kept": keep,
+                "refreshed": [], "around": [],
             })
 
         avoid_for_gen = list(dict.fromkeys(avoid + keep))
-        min_phrases = n_new if keep else DISPLAY_N
-        # 交互刷新：同次要中文 + 少重试，少一轮串行翻译
-        r = describe_one_object(
-            _root(), stem, obj_id, _client(), load_rules(),
-            write=False, avoid_phrases=avoid_for_gen, min_phrases=min_phrases,
-            with_zh=True, max_retries=2,
-        )
-        fresh = [p for p in (r.get("phrases") or []) if isinstance(p, str) and p.strip()]
-        fresh_zh_all = list(r.get("zh") or [])
-        keep_l = {p.lower() for p in keep}
-        fresh_f, fresh_zh = [], []
-        for i, p in enumerate(fresh):
-            if p.lower() in keep_l:
-                continue
-            fresh_f.append(p)
-            fresh_zh.append(fresh_zh_all[i] if i < len(fresh_zh_all) else "")
-            if len(fresh_f) >= n_new:
-                break
-        fresh = fresh_f
+        rules = load_rules()
+        client = _client()
+        ban_l = {p.lower() for p in avoid_for_gen}
+        around, around_zh = [], []
+        rest, rest_zh = [], []
+        r = None
+
         if keep:
+            n_around = min(AROUND_N, slots)
+            n_rest = max(0, slots - n_around)
+            if n_around > 0:
+                r = describe_one_object(
+                    _root(), stem, obj_id, client, rules,
+                    write=False, avoid_phrases=avoid_for_gen, min_phrases=n_around,
+                    with_zh=True, max_retries=2, seed_phrases=keep,
+                )
+                around, around_zh = _take_fresh(r, ban_l, n_around)
+                # 围绕生成不足时，把空位并入原多样化逻辑
+                n_rest = max(0, slots - len(around))
+            if n_rest > 0:
+                avoid_rest = list(dict.fromkeys(avoid_for_gen + around))
+                r = describe_one_object(
+                    _root(), stem, obj_id, client, rules,
+                    write=False, avoid_phrases=avoid_rest, min_phrases=n_rest,
+                    with_zh=True, max_retries=2,
+                )
+                rest, rest_zh = _take_fresh(r, ban_l, n_rest)
+            fresh = around + rest
             if len(fresh) < 1:
                 raise ValueError("模型未返回可替换的新短语")
             phrases = (keep + fresh)[:DISPLAY_N]
-            model_zh_aligned = ([""] * len(keep) + fresh_zh)[:len(phrases)]
+            model_zh_aligned = ([""] * len(keep) + around_zh + rest_zh)[:len(phrases)]
         else:
-            phrases = fresh[:DISPLAY_N]
-            model_zh_aligned = fresh_zh[:len(phrases)]
+            r = describe_one_object(
+                _root(), stem, obj_id, client, rules,
+                write=False, avoid_phrases=avoid_for_gen, min_phrases=DISPLAY_N,
+                with_zh=True, max_retries=2,
+            )
+            rest, rest_zh = _take_fresh(r, ban_l, DISPLAY_N)
+            phrases = rest[:DISPLAY_N]
+            model_zh_aligned = rest_zh[:len(phrases)]
+            fresh = phrases
+
         if len(phrases) < 1:
             raise ValueError("模型未返回有效短语")
 
+        if r is None:
+            r = dict(old or {})
+            r["obj_id"] = obj_id
+            r["stem"] = stem
         r["phrases"] = phrases
         r["zh"] = _attach_zh(phrases, model_zh_aligned)
         r["label"] = (old or {}).get("label") or r.get("label") or ""
@@ -1310,6 +1356,7 @@ def refresh_desc(stem, obj_id):
             "ok": True,
             "description": r,
             "kept": keep,
+            "around": around,
             "refreshed": fresh if keep else phrases,
         })
     except Exception as e:
@@ -1318,12 +1365,20 @@ def refresh_desc(stem, obj_id):
 
 @app.route("/api/refresh_caption/<stem>/<int:sentence_id>", methods=["POST"])
 def refresh_caption(stem, sentence_id):
-    """仅刷新指定一条 caption，不重建整图。"""
+    """仅刷新指定一条 caption，不重建整图。
+
+    可选 body.phrases：前端当前选用，优先于磁盘（防连点竞态残留旧短语）。
+    """
     if not _root():
         return jsonify({"error": "未配置数据集"}), 400
     try:
+        body = request.json or {}
+        override = body.get("phrases")
+        if override is not None and not isinstance(override, list):
+            override = None
         old, replacement = regenerate_single_caption(
-            _root(), stem, sentence_id, client=_client()
+            _root(), stem, sentence_id, client=_client(),
+            phrases_override=override,
         )
         replacement["zh"] = translate_text(replacement.get("caption", ""))
         old["captions"][sentence_id] = replacement
@@ -1429,8 +1484,10 @@ def delete_object(stem, obj_id):
         for p in removed:
             caption = _strip_phrase_from_caption(caption, p.get("phrase", ""))
         sent["caption"] = caption
-        for ph in sent.get("phrases", []):
-            ph["tokens_positive"] = phrase_token_span(caption, ph.get("phrase", ""))
+        kept = sent.get("phrases") or []
+        spans = assign_phrase_token_spans(caption, kept)
+        for ph, span in zip(kept, spans):
+            ph["tokens_positive"] = span
         # 清掉旁译，前端可再请求
         if removed:
             sent["zh"] = ""
@@ -1503,71 +1560,14 @@ def export_api():
 
 
 #-------------#
-# 浏览器关闭 → 释放本实例端口（刷新可被心跳取消）
+# 关启动窗口 / Ctrl+C → 释放端口（关网页不退出）
 #-------------#
-_shutdown_lock = threading.Lock()
-_shutdown_timer = None
-_BROWSER_SHUTDOWN_DELAY = 2.5
-
-
 def _exit_release_port(reason: str = ""):
     msg = "正在退出，释放端口…"
     if reason:
         msg = f"{reason}，{msg}"
     print(f"\n  {msg}", flush=True)
     os._exit(0)
-
-
-def _cancel_pending_shutdown():
-    global _shutdown_timer
-    with _shutdown_lock:
-        t = _shutdown_timer
-        _shutdown_timer = None
-    if t is not None:
-        try:
-            t.cancel()
-        except Exception:
-            pass
-
-
-def _schedule_browser_shutdown(delay: float = _BROWSER_SHUTDOWN_DELAY):
-    """关标签后短延迟退出；若期间收到心跳（刷新）则取消。"""
-    global _shutdown_timer
-
-    def _do():
-        _exit_release_port("浏览器已关闭")
-
-    with _shutdown_lock:
-        if _shutdown_timer is not None:
-            try:
-                _shutdown_timer.cancel()
-            except Exception:
-                pass
-        _shutdown_timer = threading.Timer(max(0.3, float(delay)), _do)
-        _shutdown_timer.daemon = True
-        _shutdown_timer.start()
-
-
-@app.route("/api/heartbeat", methods=["GET", "POST"])
-def heartbeat_api():
-    """页面心跳：仅用于取消「关页预约」的 shutdown（例如刷新）。"""
-    _cancel_pending_shutdown()
-    return jsonify({"ok": True})
-
-
-@app.route("/api/shutdown", methods=["GET", "POST"])
-def shutdown_api():
-    """浏览器关闭/刷新时调用；短延迟后退出，心跳可取消。"""
-    delay = _BROWSER_SHUTDOWN_DELAY
-    try:
-        if request.is_json and isinstance(request.json, dict) and "delay" in request.json:
-            delay = float(request.json.get("delay"))
-        elif request.args.get("delay") is not None:
-            delay = float(request.args.get("delay"))
-    except Exception:
-        delay = _BROWSER_SHUTDOWN_DELAY
-    _schedule_browser_shutdown(delay)
-    return jsonify({"ok": True, "shutdown_in": delay})
 
 
 def _install_shutdown_handlers():
@@ -1634,5 +1634,5 @@ if __name__ == "__main__":
     print(f"  rules_scene: {get_rules_scene() or 'default'}")
     print(f"  describe: {resolve_describe_rules_path()}")
     print(f"  caption:  {resolve_caption_rules_path()}")
-    print("  提示: 关闭网页标签 / 启动窗口 / Ctrl+C 将自动释放本实例端口\n")
+    print("  提示: 关闭启动窗口 / Ctrl+C 将释放本实例端口（刷新或关网页标签不会退出）\n")
     app.run(host=args.host, port=args.port, debug=False, use_reloader=False)

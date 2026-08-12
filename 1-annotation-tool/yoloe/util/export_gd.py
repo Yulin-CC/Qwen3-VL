@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from tqdm import tqdm
 
-from common import draft_dir, ensure_dir, phrase_token_span, write_json
+from common import assign_phrase_token_spans, draft_dir, ensure_dir, write_json
 
 
 def poly_area(flat):
@@ -50,13 +50,12 @@ def build_gd_for_stem(dataset_root, stem, dataset_name="drone"):
     for sent in caps.get("captions", []):
         caption = sent["caption"]
         image_id = sent.get("sentence_id", len(images))
-        # refresh spans if edited
+        # 统一非重叠分配，避免短串误标在更长短语内部
+        phrases = sent.get("phrases") or []
+        spans = assign_phrase_token_spans(caption, phrases)
         tokens_positive_eval = []
-        for ph in sent.get("phrases", []):
-            span = ph.get("tokens_positive")
-            if not span or caption[span[0]:span[1]] != ph["phrase"]:
-                span = phrase_token_span(caption, ph["phrase"])
-                ph["tokens_positive"] = span
+        for ph, span in zip(phrases, spans):
+            ph["tokens_positive"] = span
             if span:
                 tokens_positive_eval.append([span])
 

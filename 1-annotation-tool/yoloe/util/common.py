@@ -488,8 +488,52 @@ def write_json(path, data):
 
 
 def phrase_token_span(caption: str, phrase: str):
-    """Return [start, end) char span of phrase in caption, or None."""
+    """Return [start, end) of the first match, or None.
+
+    注意：短短语可能落在更长短语内部。批量对齐请用 assign_phrase_token_spans。
+    """
+    phrase = (phrase or "").strip()
+    if not caption or not phrase:
+        return None
     idx = caption.find(phrase)
     if idx < 0:
         return None
     return [idx, idx + len(phrase)]
+
+
+def assign_phrase_token_spans(caption: str, phrases) -> list:
+    """为多条短语分配互不重叠的 [start, end)。
+
+    - 按长度从长到短贪心，每条最多一个 span
+    - 避免「green car」占住后「car」再抢同一段，或短串误标在长串内部
+    - 返回与 phrases 等长的 list，元素为 [start,end) 或 None
+    phrases 元素可以是 str，或带 "phrase" 的 dict。
+    """
+    caption = caption or ""
+    texts = []
+    for p in phrases or []:
+        if isinstance(p, dict):
+            texts.append((p.get("phrase") or "").strip())
+        else:
+            texts.append(str(p or "").strip())
+    n = len(texts)
+    spans = [None] * n
+    claimed = []  # (start, end)
+    order = sorted(range(n), key=lambda i: (-len(texts[i]), i))
+    for i in order:
+        ph = texts[i]
+        if not ph:
+            continue
+        pos = 0
+        while pos <= len(caption) - len(ph):
+            idx = caption.find(ph, pos)
+            if idx < 0:
+                break
+            end = idx + len(ph)
+            overlap = any(not (end <= a or idx >= b) for a, b in claimed)
+            if not overlap:
+                spans[i] = [idx, end]
+                claimed.append((idx, end))
+                break
+            pos = idx + 1
+    return spans

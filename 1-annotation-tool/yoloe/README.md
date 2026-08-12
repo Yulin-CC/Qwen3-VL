@@ -69,7 +69,7 @@ yoloe/
 
 ### 2.3 Windows 便携包（无本机 Python）
 
-1. 维护者双击 `build/一键打包.bat`，产物在 `build/0-dist/GroundingReview-portable-*.zip`（当前示例：`v0.3.13`）
+1. 维护者双击 `build/一键打包.bat`，产物在 `build/0-dist/GroundingReview-portable-*.zip`（当前示例：`v0.3.24`）
 2. 同事解压后双击 `start.bat` → 浏览器打开 `http://localhost:8090`（端口占用时自动 +1）
 3. 详细说明见 `build/使用说明.txt`
 
@@ -123,7 +123,7 @@ bash z-others/1-start_review.sh --dataset /path/to/dataset
 python util/app.py --port 8082
 ```
 
-- 关闭控制台 / `Ctrl+C` / 关掉浏览器标签：释放**本实例**端口
+- 关闭控制台 / `Ctrl+C`：释放**本实例**端口（刷新或关网页标签不会退出）
 - **可多开**：首选端口被占用时自动改用 `PORT+1`…，不会杀掉其它已开窗口
 
 ### 4.2 界面流程
@@ -138,7 +138,7 @@ python util/app.py --port 8082
 
 标注操作细则与配图见 `z-others/标注规则.md`。审阅时请留意：
 
-- 每个目标右侧一般展示 **最多 3 条**候选描述；**亮绿**为当前 caption 已选
+- 每个目标右侧一般展示 **最多 6 条**候选描述 + 末尾「保留源标签」；**亮绿**为当前 caption 已选；选源标签则只用标签组 caption、不可再选描述词；有已选再点刷新时，会保留已选并生成 2 条贴近变体 + 其余多样化
 - **虚线**短语表示已被其它 caption 占用，尽量换一条，避免重复
 - caption **不可为空**：未选目标描述时切换 W/S 或点 tab 会提示补选
 - 不同目标禁止写成「A is also B」这类合并歧义句；同目标才可用同位语

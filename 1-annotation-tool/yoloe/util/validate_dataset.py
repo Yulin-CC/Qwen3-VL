@@ -350,6 +350,55 @@ def _soft_validate_from_draft(root, jsons_dirname, images_dirname, signature,
     }
 
 
+def _try_resume_without_scan(root, jsons_dirname, images_dirname):
+    """
+    续跑秒开：validate_log 已通过且目录名一致、draft 齐套时，
+    不再 scandir 全量标签/图片做指纹（大数据集可从几十秒降到毫秒级）。
+    「重新生成」走 force=True，仍会全量校验。
+    """
+    log = _read_validate_log(root)
+    if log.get("version") != 1:
+        return None
+    result = log.get("result")
+    if not isinstance(result, dict) or not result.get("ok"):
+        return None
+    old_sig = log.get("signature") or {}
+    if old_sig.get("jsons_dirname") != jsons_dirname:
+        return None
+    if old_sig.get("images_dirname") != images_dirname:
+        return None
+    geom = (result.get("geometry") or "").strip().lower()
+    if geom not in {"rectangle", "polygon", "mixed"}:
+        cfg = read_draft_config(root)
+        geom = (cfg.get("geometry") or "").strip().lower()
+        if geom not in {"rectangle", "polygon", "mixed"}:
+            return None
+    n_labels = int(old_sig.get("n_labels") or result.get("stats", {}).get("n_json") or 0)
+    n_obj = _count_json_stems(os.path.join(draft_dir(root), "objects"))
+    n_cap = _count_json_stems(os.path.join(draft_dir(root), "captions"))
+    if n_labels < 1 or n_obj < n_labels or n_cap < n_labels:
+        return None
+    img_dir = resolve_images_dir(root, images_dirname)
+    json_dir = resolve_jsons_dir(root, jsons_dirname)
+    if not os.path.isdir(img_dir) or not os.path.isdir(json_dir):
+        return None
+    # 选项只做候选目录名探测（早停），避免为秒开再扫万级文件
+    options = list_jsons_options(root) if root else []
+    img_options = list_images_options(root) if root else []
+    cached = _result_from_log(log, options, img_options)
+    cached["ok"] = True
+    cached["geometry"] = geom
+    cached["jsons_dirname"] = jsons_dirname
+    cached["images_dirname"] = images_dirname
+    cached["from_cache"] = True
+    cached["cache_path"] = f"{VALIDATE_LOG_NAME}(skip-scan)"
+    stats = dict(cached.get("stats") or {})
+    stats["n_objects_draft"] = n_obj
+    stats["n_captions_draft"] = n_cap
+    cached["stats"] = stats
+    return cached
+
+
 #-------------#
 # 校验数据集（优先 draft/validate_log.json）
 #-------------#
@@ -362,14 +411,13 @@ def validate_dataset(root: str, jsons_dirname: str = "jsons",
     geometry: 'rectangle' | 'polygon' | 'mixed' | None
 
     force=False：
-      1) draft/validate_log.json 签名未变 → 复用
-      2) draft 已齐套且 config 有 geometry → 软通过（不扫标签）
-      3) 否则全量校验并写 log
+      1) validate_log 已通过 + draft 齐套 → 秒开（不扫标签指纹）
+      2) 签名未变 → 复用
+      3) draft 已齐套且 config 有 geometry → 软通过
+      4) 否则全量校验并写 log
     """
     jsons_dirname = normalize_jsons_dirname(jsons_dirname)
     images_dirname = normalize_images_dirname(images_dirname)
-    options = list_jsons_options(root) if root else []
-    img_options = list_images_options(root) if root else []
 
     if not root or not os.path.isdir(root):
         return {
@@ -377,12 +425,20 @@ def validate_dataset(root: str, jsons_dirname: str = "jsons",
             "geometry": None,
             "jsons_dirname": jsons_dirname,
             "images_dirname": images_dirname,
-            "jsons_options": options,
-            "images_options": img_options,
+            "jsons_options": [],
+            "images_options": [],
             "errors": [f"目录不存在: {root}"],
             "stats": {},
             "from_cache": False,
         }
+
+    if not force:
+        fast = _try_resume_without_scan(root, jsons_dirname, images_dirname)
+        if fast is not None:
+            return fast
+
+    options = list_jsons_options(root) if root else []
+    img_options = list_images_options(root) if root else []
 
     signature = build_validate_signature(root, jsons_dirname, images_dirname)
     if not force:

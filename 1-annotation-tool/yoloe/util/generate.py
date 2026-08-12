@@ -101,19 +101,13 @@ def assess_draft(dataset_root, limit=None, jsons_dirname="jsons", geometry=None,
     from common import draft_dir, normalize_jsons_dirname, read_draft_config
 
     jsons_dirname = normalize_jsons_dirname(jsons_dirname)
-    stems = list_json_stems(dataset_root, limit=limit, jsons_dirname=jsons_dirname)
     obj_dir = os.path.join(draft_dir(dataset_root), "objects")
     desc_dir = os.path.join(draft_dir(dataset_root), "descriptions")
     cap_dir = os.path.join(draft_dir(dataset_root), "captions")
 
     obj_stems = _listdir_stems(obj_dir)
-    if limit:
-        keep = set(stems)
-        obj_stems = [s for s in obj_stems if s in keep]
     cap_stems_set = set(_listdir_stems(cap_dir))
     obj_stems_set = set(obj_stems)
-
-    missing_objects = [s for s in stems if s not in obj_stems_set]
 
     # 标签目录 / 几何属性切换后需重裁，才能让主窗口画正确的框/多边形
     draft_cfg = read_draft_config(dataset_root) if os.path.isdir(draft_dir(dataset_root)) else {}
@@ -128,27 +122,37 @@ def assess_draft(dataset_root, limit=None, jsons_dirname="jsons", geometry=None,
         has_objects and prev_geom and cur_geom and prev_geom != cur_geom
     )
     force_crop = source_mismatch or geometry_mismatch
-    need_crop = bool(missing_objects) or force_crop
 
     missing_desc = 0
     missing_cap = 0
-    check_stems = obj_stems if obj_stems else []
+    missing_objects = []
+    stems = []
 
     if not deep:
-        # 快速：caption 缺文件即算缺；describe 用「每图至少有描述文件」+
-        # 描述总数与目标文件数的粗检（不打开 objects/desc 内容）
+        # 秒开：以 draft/objects 为宇宙，不 listdir 全量标签目录
+        check_stems = obj_stems
+        if limit:
+            check_stems = check_stems[:limit]
+        need_crop = bool(force_crop) or (not check_stems)
+        stems = list(check_stems)
         desc_counts = _desc_counts_by_stem(desc_dir)
         for stem in check_stems:
             if stem not in cap_stems_set:
                 missing_cap += 1
-            n_desc = desc_counts.get(stem, 0)
-            if n_desc < 1:
+            if desc_counts.get(stem, 0) < 1:
                 missing_desc += 1
-        # 若描述文件总数明显偏少（多目标图），标 need_describe，触发后续补齐
         n_desc_files = sum(desc_counts.values())
         if check_stems and n_desc_files < len(check_stems):
             missing_desc = max(missing_desc, len(check_stems) - n_desc_files)
     else:
+        stems = list_json_stems(dataset_root, limit=limit, jsons_dirname=jsons_dirname)
+        if limit:
+            keep = set(stems)
+            obj_stems = [s for s in obj_stems if s in keep]
+            obj_stems_set = set(obj_stems)
+        missing_objects = [s for s in stems if s not in obj_stems_set]
+        need_crop = bool(missing_objects) or force_crop
+        check_stems = obj_stems if obj_stems else []
         from caption import captions_need_rebuild
         from describe import is_placeholder_desc
 

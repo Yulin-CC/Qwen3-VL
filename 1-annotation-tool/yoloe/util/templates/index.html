@@ -61,7 +61,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
                 pointer-events:none;backdrop-filter:blur(4px)}
 
 /* 右侧：目标描述 | 文件概览（第十四次迭代） */
-#side-panel{width:var(--side-w,420px);background:#1a1d27;display:flex;flex-direction:column;overflow:hidden;flex-shrink:0}
+#side-panel{width:var(--side-w,600px);background:#1a1d27;display:flex;flex-direction:column;overflow:hidden;flex-shrink:0}
 #side-tabs{display:flex;border-bottom:1px solid #2d3148;flex-shrink:0;background:#0f1117}
 .side-tab{flex:1;padding:8px 6px;font-size:12px;color:#94a3b8;background:transparent;border:none;
           border-bottom:2px solid transparent;cursor:pointer}
@@ -76,10 +76,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
 .obj-card.refreshing{opacity:.72;pointer-events:none}
 .obj-card.refreshing .phrase-list{opacity:.55}
 .obj-card.refreshing .refresh-btn{color:#93c5fd}
+#btn-refresh-caption.refreshing{color:#93c5fd;border-color:#60a5fa88;pointer-events:none;opacity:.9}
+#cap-sheet.refreshing{opacity:.72;pointer-events:none}
 .obj-thumb{width:72px;height:72px;object-fit:cover;border-radius:6px;background:#0f1117;flex-shrink:0;border:1px solid #2d3148}
 .obj-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
-.obj-body .title{font-size:11px;font-weight:600;display:flex;justify-content:space-between;gap:4px;align-items:center}
-.phrase-list{display:flex;flex-wrap:wrap;gap:6px;align-content:flex-start}
+.obj-body .title{font-size:11px;font-weight:600;display:flex;justify-content:space-between;gap:4px;align-items:center;margin-bottom:2px}
+.phrase-list{display:flex;flex-wrap:nowrap;gap:8px;align-items:flex-start;justify-content:space-between;margin-top:6px}
+.phrase-list-main{display:flex;flex-wrap:wrap;gap:6px;align-content:flex-start;flex:1;min-width:0}
 .phrase-chip{padding:4px 10px;border-radius:999px;border:1.5px solid #3d4166;background:#0f1117;
              color:#e2e8f0;font-size:12px;cursor:pointer;line-height:1.35;max-width:100%;word-break:break-word}
 .phrase-chip:hover{border-color:#86efac;color:#bbf7d0}
@@ -88,8 +91,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
 .phrase-chip.used-elsewhere{border-style:dashed;border-color:#64748b;color:#94a3b8;opacity:.85}
 .phrase-chip.used-elsewhere:hover{border-color:#94a3b8;color:#cbd5e1}
 .phrase-chip.selected.used-elsewhere{border-style:solid;opacity:1}
+.phrase-chip.keep-label{border-style:dashed;border-color:#a78bfa;color:#ddd6fe;
+  flex-shrink:0;margin-left:auto;margin-top:10px;align-self:flex-start;white-space:nowrap}
+.phrase-chip.keep-label:hover{border-color:#c4b5fd;color:#ede9fe}
+.phrase-chip.keep-label.selected{border-style:solid;border-color:#a78bfa;background:#4c1d9566;color:#ede9fe;
+  box-shadow:inset 0 0 0 1px #a78bfa99}
 .obj-card.focus .phrase-chip{border-color:#fbbf2488}
 .obj-card.focus .phrase-chip.selected{border-color:#fbbf24;box-shadow:inset 0 0 0 1px #fbbf24,0 0 8px #fbbf2444}
+.obj-card.focus .phrase-chip.keep-label.selected{border-color:#c4b5fd;box-shadow:inset 0 0 0 1px #c4b5fd,0 0 8px #a78bfa44}
 #empty-obj{color:#64748b;font-size:12px;padding:16px 4px}
 
 /* 底部 caption */
@@ -262,7 +271,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
         <div id="cap-tabs-actions">
           <span id="cap-tab-hint" title="键盘 W/S 切换前后 caption">W/S 切 caption</span>
           <button class="btn btn-primary btn-sm" onclick="addCaption()" title="新增 caption，优先未覆盖目标">新增</button>
-          <button class="btn btn-outline btn-sm" onclick="refreshActiveCaption()" title="仅重写当前这条 caption">刷新本条</button>
+          <button id="btn-refresh-caption" class="btn btn-outline btn-sm" onclick="refreshActiveCaption()" title="仅重写当前这条 caption">刷新本条</button>
           <button class="btn btn-outline-danger btn-sm" onclick="deleteActiveCaption()">删除本条</button>
         </div>
       </div>
@@ -374,6 +383,7 @@ let naturalW = 1, naturalH = 1;
 let zhSeq = 0;           // 翻译请求序号：切图后丢弃旧结果
 let highlightObjId = null;  // 右侧点击高亮的目标
 let dirty = false;
+let editRev = 0;  // 本地编辑代数：save 中途若又改了，禁止误清 dirty
 let genPolling = false;
 let sideTab = 'objs';
 let selectedJsons = 'jsons';
@@ -398,7 +408,47 @@ async function api(url, opts) {
   return data || {};
 }
 function setStatus(t){ document.getElementById('status').textContent = t || ''; }
-function markDirty(){ dirty = true; }
+function markDirty(){ dirty = true; editRev++; }
+
+const REVIEW_POS_KEY = 'gd_review_pos_v1';
+
+/** F5 后回到当前图（同 tab sessionStorage，按数据集 root 匹配） */
+function saveReviewPos(){
+  try {
+    const root = (document.getElementById('dir-chip').textContent || '').trim();
+    if (!root || root === '未选择' || !curStem) return;
+    sessionStorage.setItem(REVIEW_POS_KEY, JSON.stringify({
+      root, stem: curStem, activeCap: activeCap || 0,
+    }));
+  } catch (_) {}
+}
+
+function readReviewPos(){
+  try {
+    return JSON.parse(sessionStorage.getItem(REVIEW_POS_KEY) || 'null');
+  } catch (_) {
+    return null;
+  }
+}
+
+function resolveResumeStem(root, imageList){
+  const pos = readReviewPos();
+  if (!pos || !pos.stem || !imageList || !imageList.length) return null;
+  const rootNow = (root || '').trim();
+  if (pos.root && rootNow && pos.root !== rootNow) return null;
+  if (!imageList.some(img => img.stem === pos.stem)) return null;
+  return pos;
+}
+
+function applyResumeActiveCap(capIdx){
+  const caps = (item && item.captions && item.captions.captions) || [];
+  if (!caps.length) return;
+  const n = Math.max(0, Math.min(caps.length - 1, Number(capIdx) || 0));
+  if (n === activeCap) return;
+  activeCap = n;
+  renderAll();
+  saveReviewPos();
+}
 
 /** 刚手动刷新过的目标，避免 ensureZh 再次整表覆盖 */
 const refreshedDescAt = {};
@@ -441,6 +491,36 @@ function activePhraseLists(cap){
   };
 }
 
+/** 与后端 assign_phrase_token_spans 一致：最长优先、互不重叠、每条短语一个区间 */
+function assignPhraseTokenSpans(caption, phraseTexts){
+  const src = String(caption ?? '');
+  const texts = (phraseTexts || []).map(p => String(p || '').trim());
+  const spans = texts.map(() => null);
+  const claimed = [];
+  const order = texts.map((_, i) => i).sort((a, b) => {
+    const d = texts[b].length - texts[a].length;
+    return d !== 0 ? d : a - b;
+  });
+  for (const i of order){
+    const ph = texts[i];
+    if (!ph) continue;
+    let pos = 0;
+    while (pos <= src.length - ph.length){
+      const idx = src.indexOf(ph, pos);
+      if (idx < 0) break;
+      const end = idx + ph.length;
+      const overlap = claimed.some(([a, b]) => !(end <= a || idx >= b));
+      if (!overlap){
+        spans[i] = [idx, end];
+        claimed.push([idx, end]);
+        break;
+      }
+      pos = idx + 1;
+    }
+  }
+  return spans;
+}
+
 /**
  * 在文本中高亮短语；entries 带 obj_id/key，便于中英同步与点击画框。
  * field: 'en' | 'zh'
@@ -459,26 +539,18 @@ function highlightPhrases(text, phrasesOrEntries, field){
     field = field || 'en';
   }
   const f = field || 'en';
-  const cand = entries
-    .map(e => ({e, needle: (e[f] || '').trim()}))
-    .filter(x => x.needle)
-    .sort((a, b) => b.needle.length - a.needle.length);
-  if (!cand.length) return escHtml(src);
-
+  const needles = entries.map(e => (e[f] || '').trim());
+  if (!needles.some(Boolean)) return escHtml(src);
+  const spans = assignPhraseTokenSpans(src, needles);
   const ranges = []; // {start,end,key,obj_id}
-  for (const {e, needle} of cand){
-    let from = 0;
-    while (from < src.length){
-      const i = src.indexOf(needle, from);
-      if (i < 0) break;
-      const end = i + needle.length;
-      const overlap = ranges.some(r => !(end <= r.start || i >= r.end));
-      if (!overlap){
-        ranges.push({start: i, end, key: e.key || '', obj_id: e.obj_id});
-      }
-      from = end;
-    }
-  }
+  spans.forEach((span, i) => {
+    if (!span) return;
+    const e = entries[i] || {};
+    ranges.push({
+      start: span[0], end: span[1],
+      key: e.key || '', obj_id: e.obj_id,
+    });
+  });
   ranges.sort((a, b) => a.start - b.start);
   let out = '', cursor = 0;
   for (const r of ranges){
@@ -549,26 +621,63 @@ function bindCapPhraseInteractions(){
   });
 }
 
+function normObjId(id){
+  const n = Number(id);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** 右侧卡片目标：obj_ids ∪ 已选短语所属目标（统一成 number，避免串类型对不上） */
 function rightPanelObjIds(active){
-  const valid = new Set(((item && item.meta && item.meta.objects) || []).map(o => o.obj_id));
+  const valid = new Set(
+    ((item && item.meta && item.meta.objects) || [])
+      .map(o => normObjId(o.obj_id))
+      .filter(id => id != null)
+  );
   const ids = [];
-  (active.obj_ids || []).forEach(id => {
-    if (valid.has(id) && !ids.includes(id)) ids.push(id);
-  });
+  const push = (raw) => {
+    const id = normObjId(raw);
+    if (id == null || !valid.has(id) || ids.includes(id)) return;
+    ids.push(id);
+  };
+  (active && active.obj_ids || []).forEach(push);
+  (active && active.phrases || []).forEach(p => { if (p) push(p.obj_id); });
   return ids;
 }
 
+/** 选用短语所属目标写回 obj_ids，保证切 caption / 刷新后右侧能立刻跟上 */
+function syncCaptionObjIdsFromPhrases(cap){
+  if (!cap) return false;
+  const prev = JSON.stringify(cap.obj_ids || []);
+  const ids = [];
+  const push = (raw) => {
+    const id = normObjId(raw);
+    if (id == null || ids.includes(id)) return;
+    ids.push(id);
+  };
+  (cap.obj_ids || []).forEach(push);
+  (cap.phrases || []).forEach(p => {
+    if (!p) return;
+    const id = normObjId(p.obj_id);
+    if (id == null) return;
+    p.obj_id = id;
+    push(id);
+  });
+  cap.obj_ids = ids;
+  return JSON.stringify(ids) !== prev;
+}
+
 /* ── 面板拖拽尺寸 ── */
-const SIDE_W_DEFAULT = 420;
+const SIDE_W_DEFAULT = 600;
 const SIDE_W_MIN = 240;
-const SIDE_W_MAX = 720;
+const SIDE_W_MAX = 960;
 function loadLayout(){
-  // v22：默认右侧加宽；旧 v21 的 300 默认不继承，避免长描述仍挤在窄栏
+  // v23：6 条描述默认栏宽 600；旧 ≤420 的保存宽度不继承
+  const s23 = JSON.parse(localStorage.getItem('gd_layout_v23') || 'null');
   const s22 = JSON.parse(localStorage.getItem('gd_layout_v22') || 'null');
   const s21 = JSON.parse(localStorage.getItem('gd_layout_v21') || '{}');
-  const s = s22 || s21;
+  const s = s23 || s22 || s21;
   let sideW = s.sideW || s.objW || null;
-  if (!s22 && sideW === 300) sideW = null;
+  if (!s23 && sideW != null && sideW <= 420) sideW = null;
   if (sideW) document.documentElement.style.setProperty('--side-w', sideW + 'px');
   else document.documentElement.style.setProperty('--side-w', SIDE_W_DEFAULT + 'px');
   if (s.capH) document.documentElement.style.setProperty('--cap-h', s.capH + 'px');
@@ -576,7 +685,7 @@ function loadLayout(){
 }
 function saveLayout(){
   const css = getComputedStyle(document.documentElement);
-  localStorage.setItem('gd_layout_v22', JSON.stringify({
+  localStorage.setItem('gd_layout_v23', JSON.stringify({
     sideW: parseInt(css.getPropertyValue('--side-w')) || SIDE_W_DEFAULT,
     capH: parseInt(css.getPropertyValue('--cap-h')) || 180,
     sideTab,
@@ -1188,7 +1297,13 @@ async function openDataset(root, {fromBoot=false, jsons_dirname=null, images_dir
 
   await reloadImages();
   if (images.length){
-    if (!fromBoot || !curStem) await loadStem(images[0].stem);
+    const pos = resolveResumeStem(root, images);
+    if (pos){
+      await loadStem(pos.stem);
+      applyResumeActiveCap(pos.activeCap);
+    } else if (!fromBoot || !curStem){
+      await loadStem(images[0].stem);
+    }
   } else {
     setStatus('无 draft/objects，请检查生成结果');
   }
@@ -1290,6 +1405,61 @@ function needsZh(it){
   });
 }
 
+/** specialvehicle / hard_hat → special vehicle（与后端 label_natural_reading 对齐） */
+function labelNaturalReading(label){
+  let s = String(label || '').trim();
+  if (!s) return 'object';
+  s = s.replace(/[_\-]+/g, ' ');
+  s = s.replace(/([a-z])([A-Z])/g, '$1 $2');
+  s = s.replace(/([A-Za-z])(\d)/g, '$1 $2');
+  s = s.replace(/\s+/g, ' ').trim().toLowerCase();
+  return s || 'object';
+}
+
+function sourceLabelPhraseForObj(obj){
+  return labelNaturalReading(obj && obj.label);
+}
+
+function isKeepSourceLabelPhrase(p){
+  return !!(p && (p.keep_source_label === true || p.keep_source_label === 1));
+}
+
+function objHasKeepSourceLabel(cap, oid){
+  const oidN = normObjId(oid);
+  if (oidN == null || !cap) return false;
+  return (cap.phrases || []).some(
+    p => isKeepSourceLabelPhrase(p) && normObjId(p.obj_id) === oidN
+  );
+}
+
+/** 去掉某目标全部选用（可选仅去掉源标签或仅去掉描述词） */
+function removeObjPhrasesFromCaption(cap, oid, pred){
+  if (!cap) return [];
+  const oidN = normObjId(oid);
+  const removed = [];
+  const kept = [];
+  (cap.phrases || []).forEach(p => {
+    if (normObjId(p && p.obj_id) !== oidN){ kept.push(p); return; }
+    if (pred && !pred(p)){ kept.push(p); return; }
+    removed.push(p);
+  });
+  if (!removed.length) return [];
+  cap.phrases = kept;
+  let caption = cap.caption || '';
+  const keepTexts = kept.map(p => normPhrase(p.phrase)).filter(Boolean);
+  removed.forEach(p => {
+    const ph = normPhrase(p.phrase);
+    if (ph) caption = stripPhraseFromCaption(caption, ph, keepTexts);
+  });
+  cap.caption = caption;
+  if (!(cap.phrases || []).length){
+    clearCaptionText(cap);
+  } else {
+    syncPhraseTokens(cap);
+  }
+  return removed;
+}
+
 function normPhrase(s){
   return String(s || '').trim().replace(/\s+/g, ' ');
 }
@@ -1299,17 +1469,19 @@ function usedPhraseSets(cap){
   (cap && cap.phrases || []).forEach(p => {
     if (!p) return;
     const ph = normPhrase(p.phrase);
-    if (!ph) return;
-    if (!m[p.obj_id]) m[p.obj_id] = new Set();
-    m[p.obj_id].add(ph);
+    const oid = normObjId(p.obj_id);
+    if (!ph || oid == null) return;
+    p.obj_id = oid;
+    if (!m[oid]) m[oid] = new Set();
+    m[oid].add(ph);
   });
   return m;
 }
 
-const PHRASE_DISPLAY_LIMIT = 3;
+const PHRASE_DISPLAY_LIMIT = 6;
 
 /**
- * 每个目标固定展示最多 3 条：保持 descriptions 原顺序，点亮/点灭不重排。
+ * 每个目标固定展示最多 6 条：保持 descriptions 原顺序，点亮/点灭不重排。
  * 若超过 3 条且已选落在窗口外，用已选替换窗口内未选项（尽量少动）。
  */
 function pickDisplayPhrases(phrases, zhList, usedSet){
@@ -1354,17 +1526,19 @@ function pickDisplayPhrases(phrases, zhList, usedSet){
  */
 function syncActiveCaptionPhrasesToRight(cap){
   if (!cap || !item) return false;
-  let changed = false;
+  let changed = syncCaptionObjIdsFromPhrases(cap);
   item.descriptions = item.descriptions || {};
   cap.phrases = Array.isArray(cap.phrases) ? cap.phrases : [];
 
   const byOid = {};
   (cap.phrases || []).forEach(p => {
-    if (!p) return;
+    if (!p || isKeepSourceLabelPhrase(p)) return; // 源标签不进 descriptions
     const ph = normPhrase(p.phrase);
-    if (!ph || p.obj_id == null) return;
-    if (!byOid[p.obj_id]) byOid[p.obj_id] = new Set();
-    byOid[p.obj_id].add(ph);
+    const oid = normObjId(p.obj_id);
+    if (!ph || oid == null) return;
+    p.obj_id = oid;
+    if (!byOid[oid]) byOid[oid] = new Set();
+    byOid[oid].add(ph);
   });
 
   rightPanelObjIds(cap).forEach(oid => {
@@ -1404,9 +1578,10 @@ function phrasesUsedElsewhere(){
     (c.phrases || []).forEach(p => {
       if (!p) return;
       const ph = normPhrase(p.phrase);
-      if (!ph) return;
-      if (!m[p.obj_id]) m[p.obj_id] = new Set();
-      m[p.obj_id].add(ph);
+      const oid = normObjId(p.obj_id);
+      if (!ph || oid == null) return;
+      if (!m[oid]) m[oid] = new Set();
+      m[oid].add(ph);
     });
   });
   return m;
@@ -1425,9 +1600,13 @@ function clearCaptionText(cap){
   cap.phrases = [];
 }
 
-function stripPhraseFromCaption(caption, phrase){
-  if (!caption || !phrase) return caption || '';
-  let text = caption.split(phrase).join(' ');
+/** 按字符区间删一段，并整理多余标点空格 */
+function removeCaptionSpan(caption, start, end){
+  let text = String(caption || '');
+  if (start == null || end == null || start < 0 || end > text.length || start >= end){
+    return text;
+  }
+  text = (text.slice(0, start) + ' ' + text.slice(end));
   text = text.replace(/\s+/g, ' ').replace(/\s+,/g, ',').replace(/,\s*,/g, ',');
   text = text.replace(/\s+\./g, '.').trim();
   text = text.replace(/^[,.\s]+|[,.\s]+$/g, '').trim();
@@ -1436,22 +1615,157 @@ function stripPhraseFromCaption(caption, phrase){
   return text;
 }
 
+/**
+ * 从正文去掉 phrase。keepPhrases：仍需保留的短语（先占坑），
+ * 避免短词误删长已选短语内部（如删 sedan 破坏 red sedan）。
+ */
+function stripPhraseFromCaption(caption, phrase, keepPhrases){
+  if (!caption || !phrase) return caption || '';
+  const ph = String(phrase).trim();
+  if (!ph) return caption;
+  const keep = (keepPhrases || [])
+    .map(p => String(p || '').trim())
+    .filter(p => p && p.toLowerCase() !== ph.toLowerCase());
+  const needles = [...keep, ph];
+  const spans = assignPhraseTokenSpans(caption, needles);
+  const span = spans[keep.length];
+  if (!span) return caption; // 无独立占位（多半嵌在已选长短语内）→ 不动
+  return removeCaptionSpan(caption, span[0], span[1]);
+}
+
 function appendPhraseToCaption(caption, phrase){
   const p = (phrase || '').trim();
   if (!p) return caption || '';
   let c = (caption || '').trim();
   if (!c) return `There is a ${p} in the scene.`;
-  if (c.includes(p)) return c;
+  // 用非重叠分配判断是否已有独立位置，避免短串误判「已在长串内」而不追加
+  const spans = assignPhraseTokenSpans(c, [p]);
+  if (spans[0]) return c;
   c = c.replace(/[.!?]\s*$/, '').trim();
   return `${c}, with ${p}.`;
 }
 
+/**
+ * 去掉正文里「未选用」候选的独立出现（防取消后残留）。
+ * 必须与已选短语联合分配 span：未选短词若只出现在已选长词内部，不得删除。
+ */
+function pruneCaptionToSelectedPhrases(cap){
+  if (!cap || !item) return false;
+  const selectedTexts = (cap.phrases || [])
+    .map(p => normPhrase(p && p.phrase))
+    .filter(Boolean);
+  const selectedLower = new Set(selectedTexts.map(p => p.toLowerCase()));
+  const orphanSet = new Set();
+  const oids = new Set(rightPanelObjIds(cap));
+  (cap.phrases || []).forEach(p => {
+    const oid = normObjId(p && p.obj_id);
+    if (oid != null) oids.add(oid);
+  });
+  oids.forEach(oid => {
+    const desc = (item.descriptions || {})[String(oid)] || {};
+    (desc.phrases || []).forEach(ph => {
+      const p = normPhrase(ph);
+      if (p && !selectedLower.has(p.toLowerCase())) orphanSet.add(p);
+    });
+  });
+  const orphans = [...orphanSet].sort((a, b) => b.length - a.length);
+  if (!orphans.length) return false;
+
+  let caption = cap.caption || '';
+  let changed = false;
+  for (let round = 0; round < orphans.length + 2; round++){
+    if (!caption) break;
+    const needles = [...selectedTexts, ...orphans];
+    const spans = assignPhraseTokenSpans(caption, needles);
+    let hit = -1;
+    for (let i = 0; i < orphans.length; i++){
+      if (spans[selectedTexts.length + i]){ hit = i; break; }
+    }
+    if (hit < 0) break;
+    const span = spans[selectedTexts.length + hit];
+    caption = removeCaptionSpan(caption, span[0], span[1]);
+    changed = true;
+  }
+  if (changed){
+    cap.caption = caption;
+    if (!selectedTexts.length) cap.zh = '';
+    syncPhraseTokens(cap);
+  }
+  return changed;
+}
+
+function phrasesPayloadForRefresh(cap){
+  return (cap && cap.phrases || [])
+    .map(p => {
+      const row = {
+        obj_id: normObjId(p && p.obj_id),
+        phrase: normPhrase(p && p.phrase),
+      };
+      if (isKeepSourceLabelPhrase(p)) row.keep_source_label = true;
+      return row;
+    })
+    .filter(p => p.obj_id != null && p.phrase);
+}
+
 function syncPhraseTokens(cap){
+  if (!cap) return;
   const caption = cap.caption || '';
-  (cap.phrases || []).forEach(ph => {
-    const p = ph.phrase || '';
-    const idx = caption.indexOf(p);
-    ph.tokens_positive = idx >= 0 ? [idx, idx + p.length] : null;
+  const phrases = cap.phrases || [];
+  const spans = assignPhraseTokenSpans(caption, phrases.map(ph => ph.phrase || ''));
+  phrases.forEach((ph, i) => { ph.tokens_positive = spans[i]; });
+}
+
+function selectedPhraseFingerprint(cap){
+  return JSON.stringify(
+    (cap && cap.phrases || [])
+      .map(p => [normObjId(p && p.obj_id), normPhrase(p && p.phrase).toLowerCase()])
+      .filter(x => x[0] != null && x[1])
+      .sort((a, b) => (a[0] - b[0]) || (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0))
+  );
+}
+
+/** 选用短语必须全部出现在 caption 正文；缺则句末补写（与后端 ensure 一致） */
+function ensureLocalPhrasesInCaption(cap){
+  if (!cap) return false;
+  let caption = cap.caption || '';
+  const phrases = cap.phrases || [];
+  if (!phrases.length) return false;
+  let changed = false;
+  for (let round = 0; round < phrases.length + 2; round++){
+    const spans = assignPhraseTokenSpans(caption, phrases.map(p => p.phrase || ''));
+    const missing = [];
+    phrases.forEach((p, i) => {
+      const ph = normPhrase(p.phrase);
+      if (ph && !spans[i]) missing.push(ph);
+    });
+    if (!missing.length) break;
+    caption = caption.replace(/[.!?]?\s*$/, '').trim() + ', with ' + missing.join(', ') + '.';
+    changed = true;
+  }
+  if (changed) cap.caption = caption;
+  syncPhraseTokens(cap);
+  return changed;
+}
+
+/** 服务端回写 caption 时保留本地选用（phrases/obj_ids）；只吸收正文与翻译 */
+function mergeCaptionsKeepSelection(serverCaps){
+  if (!serverCaps) return;
+  if (!item || !item.captions || !Array.isArray(item.captions.captions)){
+    item.captions = serverCaps;
+    return;
+  }
+  const prev = (item.captions.captions || []).map(c => ({
+    phrases: JSON.parse(JSON.stringify(c.phrases || [])),
+    obj_ids: [...(c.obj_ids || [])],
+  }));
+  item.captions = serverCaps;
+  (item.captions.captions || []).forEach((c, i) => {
+    if (!prev[i]) return;
+    c.phrases = prev[i].phrases;
+    c.obj_ids = prev[i].obj_ids;
+    // 先清未选用残留，再补已选，避免「取消 A 选 B 后 A/B 同时在正文」
+    pruneCaptionToSelectedPhrases(c);
+    ensureLocalPhrasesInCaption(c);
   });
 }
 
@@ -1477,38 +1791,119 @@ function scheduleActiveCaptionRefresh(){
     const active = caps[activeCap];
     if (!active) return;
 
-    const ok = await saveIfDirty();
+    if (syncActiveCaptionPhrasesToRight(active)) markDirty();
+    pruneCaptionToSelectedPhrases(active);
+    ensureLocalPhrasesInCaption(active);
+    markDirty();
+    renderAll();
+
+    // 强制落盘当前选用（不依赖 dirty：防保存竞态误清后跳过）
+    const ok = await persistItem();
     if (!ok || token !== captionRefreshToken) return;
 
     // 一个都没选：caption 置空并保存，绝不触发会重抽/删除的逻辑
     if (!(active.phrases && active.phrases.length)){
       clearCaptionText(active);
       markDirty();
-      await saveIfDirty();
+      await persistItem();
       if (token !== captionRefreshToken) return;
       renderAll();
       setStatus('caption 已清空（请选择目标描述）');
       return;
     }
 
+    const phraseFp = selectedPhraseFingerprint(active);
+    const phrasesBody = phrasesPayloadForRefresh(active);
     setStatus('正在生成 caption…');
     const sid = activeCap;
-    const res = await api(
-      `/api/refresh_caption/${encodeURIComponent(curStem)}/${sid}`,
-      {method:'POST'}
-    );
-    if (token !== captionRefreshToken) return;
-    if (res.error){
-      alert('caption 自动刷新失败：\n' + res.error);
-      setStatus('caption 刷新失败');
-      return;
+    setCaptionRefreshBusy(true);
+    try {
+      const res = await api(
+        `/api/refresh_caption/${encodeURIComponent(curStem)}/${sid}`,
+        {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({phrases: phrasesBody}),
+        }
+      );
+      if (token !== captionRefreshToken) return;
+      // 请求期间又改了选用：丢弃旧结果，按最新选用再刷一次
+      const curActive = (item.captions.captions || [])[sid];
+      if (!curActive || selectedPhraseFingerprint(curActive) !== phraseFp){
+        scheduleActiveCaptionRefresh();
+        return;
+      }
+      if (res.error){
+        alert('caption 自动刷新失败：\n' + res.error);
+        setStatus('caption 刷新失败');
+        return;
+      }
+      // 选用以目标描述为准：不接受服务端改写 phrases；正文漏选则本地补全
+      mergeCaptionsKeepSelection(res.captions);
+      const cur = (item.captions.captions || [])[sid] || (item.captions.captions || [])[activeCap];
+      let localTouched = false;
+      if (cur){
+        if (pruneCaptionToSelectedPhrases(cur)) localTouched = true;
+        if (ensureLocalPhrasesInCaption(cur)) localTouched = true;
+        if (syncActiveCaptionPhrasesToRight(cur)) localTouched = true;
+      }
+      if (localTouched){
+        markDirty();
+        await persistItem();
+      } else if (token === captionRefreshToken){
+        dirty = false;
+      }
+      if (token !== captionRefreshToken) return;
+      renderAll();
+      ensureZhAsync(curStem);
+      setStatus(`captions${sid + 1} 已刷新`);
+    } finally {
+      // 已排队下一次则保持「刷新中」；否则熄灭（含被 invalidate 的情况）
+      if (!captionRefreshTimer) setCaptionRefreshBusy(false);
     }
-    item.captions = res.captions;
-    dirty = false;
-    renderAll();
-    ensureZhAsync(curStem);
-    setStatus(`captions${sid + 1} 已刷新`);
   }, 220);
+}
+
+async function toggleKeepSourceLabel(oid){
+  if (!item) return;
+  const caps = item.captions.captions || [];
+  const active = caps[activeCap];
+  if (!active) return;
+  const oidN = normObjId(oid);
+  if (oidN == null) return;
+  const obj = (item.meta.objects || []).find(o => normObjId(o.obj_id) === oidN);
+  if (!obj) return;
+  const labelPh = sourceLabelPhraseForObj(obj);
+  active.phrases = active.phrases || [];
+  active.obj_ids = active.obj_ids || [];
+
+  if (objHasKeepSourceLabel(active, oidN)){
+    removeObjPhrasesFromCaption(active, oidN, isKeepSourceLabelPhrase);
+    setStatus(`已取消保留源标签: ${labelPh}`);
+  } else {
+    // 互斥：清掉该目标其它描述选用，仅保留源标签
+    removeObjPhrasesFromCaption(active, oidN, () => true);
+    if (!active.obj_ids.map(normObjId).includes(oidN)) active.obj_ids.push(oidN);
+    active.phrases = active.phrases || [];
+    active.phrases.push({
+      obj_id: oidN,
+      phrase: labelPh,
+      tokens_positive: null,
+      keep_source_label: true,
+    });
+    if (!(active.caption || '').trim()){
+      active.caption = appendPhraseToCaption('', labelPh);
+    } else {
+      pruneCaptionToSelectedPhrases(active);
+      active.caption = appendPhraseToCaption(active.caption, labelPh);
+    }
+    setStatus(`已保留源标签: ${labelPh}（不可再选其它描述）`);
+  }
+  syncCaptionObjIdsFromPhrases(active);
+  syncPhraseTokens(active);
+  markDirty();
+  renderAll();
+  scheduleActiveCaptionRefresh();
 }
 
 async function toggleObjPhrase(oid, phraseIdx){
@@ -1516,7 +1911,9 @@ async function toggleObjPhrase(oid, phraseIdx){
   const caps = item.captions.captions || [];
   const active = caps[activeCap];
   if (!active) return;
-  const desc = item.descriptions[String(oid)] || {};
+  const oidN = normObjId(oid);
+  if (oidN == null) return;
+  const desc = item.descriptions[String(oidN)] || {};
   const phrases = desc.phrases || [];
   const phrase = normPhrase(phrases[phraseIdx]);
   if (!phrase) return;
@@ -1524,7 +1921,9 @@ async function toggleObjPhrase(oid, phraseIdx){
   active.phrases = active.phrases || [];
   active.obj_ids = active.obj_ids || [];
   const samePhrase = (p) =>
-    p && p.obj_id === oid && normPhrase(p.phrase).toLowerCase() === phrase.toLowerCase();
+    p && !isKeepSourceLabelPhrase(p)
+    && normObjId(p.obj_id) === oidN
+    && normPhrase(p.phrase).toLowerCase() === phrase.toLowerCase();
   const already = active.phrases.some(samePhrase);
 
   // 取消=仅从 caption.phrases 去掉选用；obj_ids / descriptions 一律不动
@@ -1534,17 +1933,24 @@ async function toggleObjPhrase(oid, phraseIdx){
     if (!(active.phrases && active.phrases.length)){
       clearCaptionText(active);
     } else {
-      active.caption = stripPhraseFromCaption(active.caption, phrase);
+      const keep = active.phrases.map(p => normPhrase(p.phrase)).filter(Boolean);
+      active.caption = stripPhraseFromCaption(active.caption, phrase, keep);
+      pruneCaptionToSelectedPhrases(active);
     }
     setStatus(`已取消选用: ${phrase}`);
   } else {
-    if (!active.obj_ids.includes(oid)) active.obj_ids.push(oid);
-    active.phrases.push({ obj_id: oid, phrase, tokens_positive: null });
+    // 若已「保留源标签」：先退出该模式，再选描述词（互斥）
+    if (objHasKeepSourceLabel(active, oidN)){
+      removeObjPhrasesFromCaption(active, oidN, isKeepSourceLabelPhrase);
+    }
+    if (!active.obj_ids.map(normObjId).includes(oidN)) active.obj_ids.push(oidN);
+    active.phrases.push({ obj_id: oidN, phrase, tokens_positive: null });
+    // 换选时先清同目标未选用残留，再追加新短语
+    pruneCaptionToSelectedPhrases(active);
     active.caption = appendPhraseToCaption(active.caption, phrase);
     setStatus(`已选中: ${phrase}`);
   }
-  // 防御：确保当前目标仍在关联列表（避免历史逻辑误删后卡片消失）
-  if (!active.obj_ids.includes(oid)) active.obj_ids.push(oid);
+  syncCaptionObjIdsFromPhrases(active);
   syncPhraseTokens(active);
   markDirty();
   renderAll();
@@ -1580,10 +1986,12 @@ async function ensureZhAsync(stem){
   const stillMe = () => seq === zhSeq && curStem === stem && item;
   const postZh = (mode) => {
     const active = (item.captions.captions || [])[activeCap] || {};
+    syncCaptionObjIdsFromPhrases(active);
+    const objIds = rightPanelObjIds(active);
     return api('/api/ensure_zh/' + encodeURIComponent(stem), {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({obj_ids: active.obj_ids || [], mode}),
+      body: JSON.stringify({obj_ids: objIds, mode}),
     });
   };
   try {
@@ -1594,7 +2002,7 @@ async function ensureZhAsync(stem){
       setStatus(stem + ' · 翻译失败: ' + (r1.error || ''));
       return;
     }
-    item.captions = r1.captions;
+    mergeCaptionsKeepSelection(r1.captions);
     mergeDescriptionsFromServer(r1.descriptions);
     renderAll();
     setStatus(stem + ' · 翻译目标描述…');
@@ -1604,7 +2012,7 @@ async function ensureZhAsync(stem){
       setStatus(stem + ' · 短语翻译失败: ' + (r2.error || ''));
       return;
     }
-    item.captions = r2.captions;
+    mergeCaptionsKeepSelection(r2.captions);
     mergeDescriptionsFromServer(r2.descriptions);
     renderAll();
     setStatus(stem);
@@ -1613,21 +2021,33 @@ async function ensureZhAsync(stem){
   }
 }
 
-async function saveIfDirty(){
-  if (!dirty || !item || !curStem) return true;
+/** 落盘当前 item；若保存期间又有本地编辑，保持 dirty */
+async function persistItem(){
+  if (!item || !curStem) return true;
+  const rev = editRev;
+  const payload = JSON.stringify({
+    captions: item.captions,
+    descriptions: item.descriptions,
+  });
   setStatus('自动保存中…');
   const res = await api('/api/save/' + encodeURIComponent(curStem), {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({captions: item.captions, descriptions: item.descriptions})
+    body: payload,
   });
   if (res.error){
     alert('自动保存失败，已取消切换：\n' + res.error);
     setStatus('自动保存失败');
     return false;
   }
-  dirty = false;
-  setStatus('已自动保存');
+  if (rev === editRev) dirty = false;
+  else dirty = true;
+  setStatus(rev === editRev ? '已自动保存' : '已保存（仍有未保存的新修改）');
   return true;
+}
+
+async function saveIfDirty(){
+  if (!dirty || !item || !curStem) return true;
+  return persistItem();
 }
 
 async function loadStem(stem){
@@ -1644,7 +2064,7 @@ async function loadStem(stem){
   item = await api('/api/item/' + encodeURIComponent(stem));
   if (item.error){ alert(item.error); return; }
   activeCap = 0;
-  fitMode = 'full';
+  // 保留左上角「全图 / 跟目标」；仅退出手动平移缩放，按当前模式适配新图
   viewManual = false;
   const img = document.getElementById('main-img');
   img.onload = () => {
@@ -1658,6 +2078,7 @@ async function loadStem(stem){
   await reloadImages();
   updateProgress();
   setStatus(stem);
+  saveReviewPos();
   if (needsZh(item)) ensureZhAsync(stem);
 }
 
@@ -1669,8 +2090,12 @@ async function selectCap(i){
     if ((leaving.caption || '').trim()){
       clearCaptionText(leaving);
       markDirty();
+      await saveIfDirty();
     }
+    // 空 caption：确认后仍停留本条，不切走
     alert(`captions${activeCap + 1} 的 caption 为空，请选择目标描述。`);
+    renderAll();
+    return;
   }
   const ok = await saveIfDirty();
   if (!ok) return;
@@ -1678,6 +2103,7 @@ async function selectCap(i){
   activeCap = i;
   highlightObjId = null;
   renderAll();
+  saveReviewPos();
   if (item && needsZh(item)) ensureZhAsync(curStem);
 }
 
@@ -1747,7 +2173,7 @@ function renderCaptions(){
   const zhShow = emptySel ? '（请选择目标描述）' : (c.zh ? c.zh : '（翻译中…）');
   const multiHint = caps.length > 1
     ? `<span style="color:#fbbf24">共 ${caps.length} 条 caption · W↑ / S↓ 切换，勿漏检</span>`
-    : `<span style="color:#64748b">悬停同步中英高亮 · 点击高亮图中目标 · 也可点图中框</span>`;
+    : `<span style="color:#64748b">英文短语高亮可点 · 点击高亮图中目标 · 也可点图中框</span>`;
   sheet.innerHTML = `
     <div class="cap-meta">
       <span>#${activeCap} · ${escHtml(c.strategy || '')}</span>
@@ -1757,7 +2183,7 @@ function renderCaptions(){
     </div>
     <div class="cap-block">
       <div class="cap-label">中文</div>
-      <div class="cap-text" id="cap-zh">${highlightPhrases(zhShow, entries, 'zh')}</div>
+      <div class="cap-text" id="cap-zh">${escHtml(zhShow)}</div>
     </div>
     <div class="cap-block">
       <div class="cap-label">EN（目标描述高亮，可编辑；点击高亮可点）</div>
@@ -1768,11 +2194,7 @@ function renderCaptions(){
   const ta = document.getElementById('cap-en-edit');
   ta.oninput = () => {
     c.caption = ta.value;
-    (c.phrases || []).forEach(ph => {
-      const p = ph.phrase || '';
-      const idx = c.caption.indexOf(p);
-      ph.tokens_positive = idx >= 0 ? [idx, idx + p.length] : null;
-    });
+    syncPhraseTokens(c);
     const ents = activePhraseEntries(c);
     document.getElementById('cap-en-view').innerHTML = highlightPhrases(c.caption, ents, 'en');
     bindCapPhraseInteractions();
@@ -1787,7 +2209,7 @@ function renderCaptions(){
     });
     c.zh = res.zh || '';
     const ents = activePhraseEntries(c);
-    document.getElementById('cap-zh').innerHTML = highlightPhrases(c.zh || '（暂无）', ents, 'zh');
+    document.getElementById('cap-zh').textContent = c.zh || '（暂无）';
     document.getElementById('cap-en-view').innerHTML = highlightPhrases(c.caption, ents, 'en');
     bindCapPhraseInteractions();
   };
@@ -1821,36 +2243,54 @@ function renderObjects(){
     const desc = item.descriptions[String(oid)] || {phrases:[], zh:[], label: obj.label};
     const phrases = desc.phrases || [];
     const zhList = desc.zh || [];
-    const usedSet = used[oid] || new Set();
-    const usedLower = new Set([...usedSet].map(s => s.toLowerCase()));
+    const keepLabelOn = objHasKeepSourceLabel(active, oid);
+    const labelPh = sourceLabelPhraseForObj(obj);
+    // 描述芯片高亮不含「保留源标签」占用的短语
+    const usedDesc = new Set(
+      [...(used[oid] || [])].filter(ph => {
+        if (keepLabelOn && String(ph).toLowerCase() === labelPh.toLowerCase()) return false;
+        return true;
+      })
+    );
+    const usedLower = new Set([...usedDesc].map(s => s.toLowerCase()));
     const elseSet = elsewhere[oid] || new Set();
     const elseLower = new Set([...elseSet].map(s => s.toLowerCase()));
     const card = document.createElement('div');
     card.className = 'obj-card active' + (highlightObjId === oid ? ' focus' : '');
     card.title = '点击高亮图中目标';
-    const shown = pickDisplayPhrases(phrases, zhList, usedSet);
-    const chips = shown.length
+    const shown = pickDisplayPhrases(phrases, zhList, usedDesc);
+    const descChips = shown.length
       ? shown.map(r => {
           const phN = r.ph;
           const label = (r.zh && r.zh.trim()) ? r.zh : (phN || '（空）');
-          const sel = usedLower.has(phN.toLowerCase()) ? ' selected' : '';
+          const sel = (!keepLabelOn && usedLower.has(phN.toLowerCase())) ? ' selected' : '';
           const other = elseLower.has(phN.toLowerCase()) ? ' used-elsewhere' : '';
-          const tip = sel
-            ? `${phN}（当前 caption 已选用）`
-            : (other ? `${phN}（其它 caption 已选用，尽量换一条）` : phN);
+          const tip = keepLabelOn
+            ? `${phN}（已保留源标签，点选将改用描述词）`
+            : (sel
+              ? `${phN}（当前 caption 已选用）`
+              : (other ? `${phN}（其它 caption 已选用，尽量换一条）` : phN));
           return `<button type="button" class="phrase-chip${sel}${other}" data-idx="${r.idx}" title="${escHtml(tip)}">${escHtml(label)}</button>`;
         }).join('')
       : '<span style="color:#64748b;font-size:12px">暂无描述</span>';
+    const keepSel = keepLabelOn ? ' selected' : '';
+    const keepTip = keepLabelOn
+      ? `已用源标签组合 caption：${labelPh}（再点取消；不可同时选描述词）`
+      : `保留源标签：用「${labelPh}」参与 caption，不选描述性短语`;
+    const keepChip = `<button type="button" class="phrase-chip keep-label${keepSel}" data-keep-label="1" title="${escHtml(keepTip)}">保留源标签</button>`;
     card.innerHTML = `
       <img class="obj-thumb" src="/api/crop/${encodeURIComponent(curStem)}/${oid}" alt="obj${oid}">
       <div class="obj-body">
         <div class="title"><span>obj ${oid} · ${escHtml(obj.label)}</span>
           <div class="row">
-            <button class="btn btn-outline btn-sm refresh-btn" title="刷新未选用描述；当前 caption 已选用的会保留">刷新</button>
+            <button class="btn btn-outline btn-sm refresh-btn" title="刷新描述：已选保留；另生成贴近已选 + 多样化（最多 6 条，有多少更新多少）">刷新</button>
             <button class="btn btn-outline-danger btn-sm del-btn" title="删除该目标框">删除</button>
           </div>
         </div>
-        <div class="phrase-list">${chips}</div>
+        <div class="phrase-list">
+          <div class="phrase-list-main">${descChips}</div>
+          ${keepChip}
+        </div>
       </div>`;
     card.onclick = (ev) => {
       if (ev.target.closest('button')) return;
@@ -1859,14 +2299,14 @@ function renderObjects(){
     card.querySelector('.refresh-btn').onclick = async () => {
       const key = String(oid);
       const prev = item.descriptions[key] ? JSON.parse(JSON.stringify(item.descriptions[key])) : null;
-      const nKeep = (used[oid] || new Set()).size;
+      const nKeep = keepLabelOn ? 0 : usedDesc.size;
       const btn = card.querySelector('.refresh-btn');
       const btnText = btn ? btn.textContent : '刷新';
       card.classList.add('refreshing');
       if (btn){ btn.textContent = '刷新中…'; btn.disabled = true; }
       setStatus(nKeep
-        ? `刷新 obj ${oid} 描述（保留 ${nKeep} 条已选，重刷其余…）`
-        : `刷新 obj ${oid} 描述…`);
+        ? `刷新 obj ${oid} 描述（保留 ${nKeep} 条已选，其余按返回更新…）`
+        : `刷新 obj ${oid} 描述（有多少更新多少，最多 6）…`);
       try {
         const okSave = await saveIfDirty();
         if (!okSave) return;
@@ -1896,9 +2336,10 @@ function renderObjects(){
         markDirty();
         renderObjects();
         const nKept = (res.kept || []).length;
+        const nAround = (res.around || []).length;
         const nFresh = (res.refreshed || []).length;
         setStatus(nKept
-          ? `obj ${oid}：保留 ${nKept} 条已选，新刷 ${nFresh} 条`
+          ? `obj ${oid}：保留 ${nKept}，贴近 ${nAround}，新刷共 ${nFresh}（合计 ${newPhrases.length}）`
           : `obj ${oid} 描述已刷新（${newPhrases.length} 条）`);
       } finally {
         card.classList.remove('refreshing');
@@ -1909,6 +2350,10 @@ function renderObjects(){
     card.querySelectorAll('.phrase-chip').forEach(chip => {
       chip.onclick = (ev) => {
         ev.stopPropagation();
+        if (chip.dataset.keepLabel){
+          toggleKeepSourceLabel(oid);
+          return;
+        }
         toggleObjPhrase(oid, parseInt(chip.dataset.idx, 10));
       };
     });
@@ -1916,19 +2361,68 @@ function renderObjects(){
   });
 }
 
+function setCaptionRefreshBusy(busy, label){
+  const btn = document.getElementById('btn-refresh-caption');
+  const sheet = document.getElementById('cap-sheet');
+  if (btn){
+    if (busy){
+      if (!btn.dataset.label) btn.dataset.label = btn.textContent || '刷新本条';
+      btn.textContent = label || '刷新中…';
+      btn.disabled = true;
+      btn.classList.add('refreshing');
+    } else {
+      btn.textContent = btn.dataset.label || '刷新本条';
+      delete btn.dataset.label;
+      btn.disabled = false;
+      btn.classList.remove('refreshing');
+    }
+  }
+  if (sheet) sheet.classList.toggle('refreshing', !!busy);
+}
+
 async function refreshActiveCaption(){
   if (!curStem) return;
-  await saveIfDirty();
   const caps = (item && item.captions && item.captions.captions) || [];
   if (!caps.length) return;
-  setStatus(`刷新 captions${activeCap + 1}…`);
-  const res = await api(`/api/refresh_caption/${encodeURIComponent(curStem)}/${activeCap}`, {method:'POST'});
-  if (res.error){ alert(res.error); return; }
-  item.captions = res.captions;
-  dirty = false;
-  renderAll();
-  ensureZhAsync(curStem);
-  setStatus(`captions${activeCap + 1} 已刷新`);
+  const active = caps[activeCap];
+  const sid = activeCap;
+  setCaptionRefreshBusy(true);
+  try {
+    if (active){
+      pruneCaptionToSelectedPhrases(active);
+      ensureLocalPhrasesInCaption(active);
+    }
+    await persistItem();
+    setStatus(`刷新 captions${sid + 1}…`);
+    const res = await api(`/api/refresh_caption/${encodeURIComponent(curStem)}/${sid}`, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({phrases: phrasesPayloadForRefresh(active)}),
+    });
+    if (res.error){
+      alert(res.error);
+      setStatus(`captions${sid + 1} 刷新失败`);
+      return;
+    }
+    mergeCaptionsKeepSelection(res.captions);
+    const cur = (item.captions.captions || [])[sid];
+    let localTouched = false;
+    if (cur){
+      if (pruneCaptionToSelectedPhrases(cur)) localTouched = true;
+      if (ensureLocalPhrasesInCaption(cur)) localTouched = true;
+    }
+    if (localTouched){
+      markDirty();
+      await persistItem();
+    } else {
+      dirty = false;
+    }
+    renderAll();
+    ensureZhAsync(curStem);
+    setStatus(`captions${sid + 1} 已刷新`);
+  } finally {
+    setCaptionRefreshBusy(false);
+  }
 }
 
 async function addCaption(){
@@ -1995,12 +2489,17 @@ async function deleteObject(oid, label){
     setStatus(`${tip} 已删除 · 刷新 caption…`);
     let lastErr = null;
     for (const ci of toRefresh){
+      const cap = (item.captions.captions || [])[ci];
       const r = await api(
         `/api/refresh_caption/${encodeURIComponent(curStem)}/${ci}`,
-        {method:'POST'}
+        {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({phrases: phrasesPayloadForRefresh(cap)}),
+        }
       );
       if (r.error){ lastErr = r.error; continue; }
-      item.captions = r.captions;
+      mergeCaptionsKeepSelection(r.captions);
       dirty = false;
     }
     renderAll();
@@ -2543,32 +3042,7 @@ async function onRulesSceneChange(){
   setStatus(`规则场景: ${rulesScene || '通用'} · ${d.split(/[\\/]/).pop() || ''} / ${c.split(/[\\/]/).pop() || ''}`);
 }
 
-/** 关标签释放本实例端口；刷新时心跳会取消预约的 shutdown */
-function bindBrowserLifecycle(){
-  const beat = () => {
-    try {
-      fetch('/api/heartbeat', {method:'POST', keepalive:true}).catch(()=>{});
-    } catch (_) {}
-  };
-  const goodbye = () => {
-    try {
-      if (navigator.sendBeacon) {
-        navigator.sendBeacon('/api/shutdown');
-        return;
-      }
-    } catch (_) {}
-    try {
-      fetch('/api/shutdown', {method:'POST', keepalive:true}).catch(()=>{});
-    } catch (_) {}
-  };
-  beat();
-  setInterval(beat, 3000);
-  window.addEventListener('pagehide', goodbye);
-  window.addEventListener('beforeunload', goodbye);
-}
-
 (async () => {
-  bindBrowserLifecycle();
   initResizers();
   initSideTabs();
   initViewerControls();
@@ -2592,7 +3066,13 @@ function bindBrowserLifecycle(){
     if (images0 && images0.length){
       images = images0;
       await reloadImages();
-      if (!curStem) await loadStem(images[0].stem);
+      const pos = resolveResumeStem(cfg.dataset_root, images);
+      if (pos){
+        await loadStem(pos.stem);
+        applyResumeActiveCap(pos.activeCap);
+      } else if (!curStem){
+        await loadStem(images[0].stem);
+      }
       setGenChip('ready', 'ready');
       syncAnnoButton();
     } else if (cfg.jsons_dirname) {

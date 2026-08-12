@@ -17,7 +17,13 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from tqdm import tqdm
 
-from common import bbox_center, draft_dir, ensure_dir, phrase_token_span, write_json
+from common import (
+    assign_phrase_token_spans,
+    bbox_center,
+    draft_dir,
+    ensure_dir,
+    write_json,
+)
 from rules_io import load_caption_rules_text, set_rules_scene
 from vllm_client import VLLMClient, extract_json_object
 
@@ -331,37 +337,81 @@ def template_caption(phrases):
 
 
 def ensure_phrases_in_caption(caption, phrases):
-    """If some phrases missing, append them; recompute spans."""
-    missing = [p["phrase"] for p in phrases if p["phrase"] not in caption]
-    if missing:
+    """保证每条短语都有互不重叠的 span；缺则追加到句末后重算。"""
+    caption = caption or ""
+    phrases = list(phrases or [])
+    # 子串互含时「phrase in caption」会误判已存在，必须以非重叠分配为准
+    for _ in range(len(phrases) + 2):
+        spans = assign_phrase_token_spans(caption, phrases)
+        missing = []
+        for i, p in enumerate(phrases):
+            ph = (p.get("phrase") or "").strip()
+            if ph and spans[i] is None:
+                missing.append(ph)
+        if not missing:
+            break
         caption = caption.rstrip(". ") + ", with " + ", ".join(missing) + "."
-    spans = []
-    for p in phrases:
-        span = phrase_token_span(caption, p["phrase"])
-        spans.append({"obj_id": p["obj_id"], "phrase": p["phrase"], "tokens_positive": span})
-    return caption, spans
+    spans = assign_phrase_token_spans(caption, phrases)
+    out = []
+    for i, p in enumerate(phrases):
+        row = {
+            "obj_id": p["obj_id"],
+            "phrase": p.get("phrase") or "",
+            "tokens_positive": spans[i],
+        }
+        if p.get("keep_source_label"):
+            row["keep_source_label"] = True
+        out.append(row)
+    return caption, out
 
 
-def locked_phrases_from_entry(sent, objects):
-    """取出 caption 中用户已选短语（刷新时优先锁定，不重抽）。"""
-    id2label = {o["obj_id"]: o.get("label", "object") for o in objects}
+def locked_phrases_from_entry(sent, objects, desc_map=None):
+    """取出 caption 中用户已选短语（刷新时锁定，不重抽）。
+
+    以目标描述为准：若提供 desc_map，只保留该 obj 描述列表里已有的短语。
+    keep_source_label：保留源标签，不受 desc_map 过滤。
+    """
+    id2label = {}
+    for o in objects:
+        try:
+            id2label[int(o["obj_id"])] = o.get("label", "object")
+        except (TypeError, ValueError):
+            continue
     valid = set(id2label)
     out = []
     seen = set()
     for ph in sent.get("phrases") or []:
-        oid = ph.get("obj_id")
-        phrase = (ph.get("phrase") or "").strip()
-        if oid is None or oid not in valid or not phrase:
+        if not isinstance(ph, dict):
             continue
-        key = (int(oid), phrase)
+        try:
+            oid = int(ph.get("obj_id"))
+        except (TypeError, ValueError):
+            continue
+        phrase = (ph.get("phrase") or "").strip()
+        if oid not in valid or not phrase:
+            continue
+        keep_label = bool(ph.get("keep_source_label"))
+        if desc_map is not None and not keep_label:
+            opts = {
+                (x or "").strip().lower()
+                for x in ((desc_map.get(oid) or {}).get("phrases") or [])
+                if isinstance(x, str) and x.strip()
+            }
+            if opts and phrase.lower() not in opts:
+                # 描述里没有的短语不参与锁定（避免 caption 正文反推/脏数据改选用）
+                continue
+        key = (oid, phrase.lower(), keep_label)
         if key in seen:
             continue
         seen.add(key)
-        out.append({
-            "obj_id": int(oid),
+        row = {
+            "obj_id": oid,
             "phrase": phrase,
             "label": id2label[oid],
-        })
+        }
+        if keep_label:
+            row["keep_source_label"] = True
+        out.append(row)
     return out
 
 
@@ -431,8 +481,13 @@ def build_one_caption_entry(objects, desc_map, obj_ids, strategy, grid_cell,
     }
 
 
-def regenerate_single_caption(dataset_root, stem, sentence_id, client=None, seed=None):
-    """只重写 captions[sentence_id]：保留用户已选短语，仅重组句式。"""
+def regenerate_single_caption(dataset_root, stem, sentence_id, client=None, seed=None,
+                              phrases_override=None):
+    """只重写 captions[sentence_id]：保留用户已选短语，仅重组句式。
+
+    phrases_override: 前端当前选用（优先于磁盘）。避免连点切换时旧 save 尚未落盘/
+    竞态写回导致仍按已取消短语生成。
+    """
     obj_path = os.path.join(draft_dir(dataset_root), "objects", f"{stem}.json")
     out_path = os.path.join(draft_dir(dataset_root), "captions", f"{stem}.json")
     with open(obj_path, encoding="utf-8") as f:
@@ -444,13 +499,46 @@ def regenerate_single_caption(dataset_root, stem, sentence_id, client=None, seed
     caps = old.get("captions") or []
     if not (0 <= sentence_id < len(caps)):
         raise IndexError(f"sentence_id 越界: {sentence_id}")
-    sent = caps[sentence_id]
+    sent = dict(caps[sentence_id] or {})
+    if phrases_override is not None:
+        cleaned = []
+        seen = set()
+        for ph in phrases_override:
+            if not isinstance(ph, dict):
+                continue
+            try:
+                oid = int(ph.get("obj_id"))
+            except (TypeError, ValueError):
+                continue
+            phrase = (ph.get("phrase") or "").strip()
+            if not phrase:
+                continue
+            key = (oid, phrase.lower(), bool(ph.get("keep_source_label")))
+            if key in seen:
+                continue
+            seen.add(key)
+            row = {"obj_id": oid, "phrase": phrase, "tokens_positive": None}
+            if ph.get("keep_source_label"):
+                row["keep_source_label"] = True
+            cleaned.append(row)
+        sent["phrases"] = cleaned
     objects = meta["objects"]
     desc_map = load_desc_map(dataset_root, stem)
     rng = random.Random(seed if seed is not None else random.randint(0, 10**9))
-    locked = locked_phrases_from_entry(sent, objects)
+    # 刷新锁定以 caption.phrases 选用为准，勿用 desc_map 过滤掉已选
+    # （否则会出现右侧选了 5 条、生成 caption 只带 4 条）
+    locked = locked_phrases_from_entry(sent, objects, desc_map=None)
     raw_phrases = sent.get("phrases")
-    keep_ids = list(sent.get("obj_ids") or [])
+    keep_ids = []
+    for oid in list(sent.get("obj_ids") or []):
+        try:
+            keep_ids.append(int(oid))
+        except (TypeError, ValueError):
+            continue
+    for ph in locked:
+        oid = ph.get("obj_id")
+        if oid is not None and oid not in keep_ids:
+            keep_ids.append(oid)
     # 用户显式清空选用（phrases=[]）：禁止重抽；caption 必须为空
     if isinstance(raw_phrases, list) and len(raw_phrases) == 0:
         replacement = dict(sent)
@@ -459,7 +547,8 @@ def regenerate_single_caption(dataset_root, stem, sentence_id, client=None, seed
         replacement["zh"] = ""
         replacement["obj_ids"] = keep_ids
         replacement["sentence_id"] = sentence_id
-    elif locked:
+    elif locked or isinstance(raw_phrases, list):
+        # 已有选用列表：只重组句式，绝不按 obj 重抽短语（以目标描述选用为准）
         replacement = build_one_caption_entry(
             objects, desc_map,
             obj_ids=keep_ids,
