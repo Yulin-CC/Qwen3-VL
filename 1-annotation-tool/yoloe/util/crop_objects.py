@@ -21,6 +21,7 @@ from common import (
     ensure_dir,
     find_image_path,
     list_image_stems,
+    load_json,
     load_labelme,
     match_segs_to_boxes,
     normalize_images_dirname,
@@ -231,8 +232,7 @@ def _rewrite_objects_jsonl(dataset_root, stems_order=None):
             path = os.path.join(obj_dir, f"{stem}.json")
             if not os.path.isfile(path):
                 continue
-            with open(path, encoding="utf-8") as f:
-                meta = json.load(f)
+            meta = load_json(path) or {}
             for obj in meta.get("objects") or []:
                 fout.write(_jsonl_row(meta, obj) + "\n")
                 n_obj += 1

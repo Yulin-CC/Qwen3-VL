@@ -6,7 +6,6 @@
 """
 
 import argparse
-import json
 import os
 import sys
 from pathlib import Path
@@ -15,7 +14,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from tqdm import tqdm
 
-from common import assign_phrase_token_spans, draft_dir, ensure_dir, write_json
+from common import assign_phrase_token_spans, draft_dir, ensure_dir, load_json, write_json
 
 
 def poly_area(flat):
@@ -37,12 +36,17 @@ def build_gd_for_stem(dataset_root, stem, dataset_name="drone"):
     if not os.path.isfile(obj_path) or not os.path.isfile(cap_path):
         return None
 
-    with open(obj_path, encoding="utf-8") as f:
-        meta = json.load(f)
-    with open(cap_path, encoding="utf-8") as f:
-        caps = json.load(f)
+    meta = load_json(obj_path)
+    caps = load_json(cap_path)
+    if not isinstance(meta, dict) or not isinstance(caps, dict):
+        print(f"导出跳过 {stem}: draft JSON 损坏或为空")
+        return None
+    objects = meta.get("objects")
+    if not isinstance(objects, list):
+        print(f"导出跳过 {stem}: objects 字段缺失")
+        return None
 
-    id2obj = {o["obj_id"]: o for o in meta["objects"]}
+    id2obj = {o["obj_id"]: o for o in objects}
     images = []
     annotations = []
     ann_id = 0
@@ -104,7 +108,11 @@ def build_gd_for_stem(dataset_root, stem, dataset_name="drone"):
 
 
 def export_stem(dataset_root, stem, out_dir=None, dataset_name="drone"):
-    gd = build_gd_for_stem(dataset_root, stem, dataset_name=dataset_name)
+    try:
+        gd = build_gd_for_stem(dataset_root, stem, dataset_name=dataset_name)
+    except Exception as e:
+        print(f"导出跳过 {stem}: {e}")
+        return None
     if gd is None:
         return None
     out_dir = out_dir or os.path.join(dataset_root, "jsons-GD")

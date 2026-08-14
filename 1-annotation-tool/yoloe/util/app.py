@@ -24,6 +24,7 @@ from common import (
     draft_dir,
     list_image_stems,
     list_jsons_options,
+    load_json,
     normalize_images_dirname,
     normalize_jsons_dirname,
     assign_phrase_token_spans,
@@ -39,6 +40,8 @@ from describe import (
     load_rules,
     phrase_content_key,
     phrase_synonym_key,
+    locked_axis_tokens,
+    shares_locked_axis,
 )
 from export_gd import export_dataset, export_stem
 from generate import assess_draft, run_generate
@@ -212,13 +215,6 @@ def list_stems():
     except OSError:
         return []
     return sorted(stems)
-
-
-def load_json(path, default=None):
-    if not os.path.isfile(path):
-        return default
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
 
 
 def translate_text(text: str) -> str:
@@ -1142,7 +1138,10 @@ def ensure_zh_api(stem):
         )
     except Exception as e:
         # 翻译失败时仍返回当前 item，便于前端继续用英文；error 供状态栏展示
-        payload = _load_item_payload(stem) or payload
+        try:
+            payload = _load_item_payload(stem) or payload
+        except Exception:
+            pass
         return jsonify({"ok": False, "error": str(e), **payload}), 500
     payload = _load_item_payload(stem)
     return jsonify({"ok": True, **payload})
@@ -1174,6 +1173,17 @@ def serve_crop(stem, obj_id):
     return jsonify({"error": "obj not found"}), 404
 
 
+def _desc_unchanged(disk, out):
+    if not isinstance(disk, dict):
+        return False
+    return (
+        (disk.get("phrases") or []) == (out.get("phrases") or [])
+        and (disk.get("zh") or []) == (out.get("zh") or [])
+        and (disk.get("chosen") or []) == (out.get("chosen") or [])
+        and (disk.get("label") or "") == (out.get("label") or "")
+    )
+
+
 @app.route("/api/save/<stem>", methods=["POST"])
 def save_item(stem):
     data = request.json or {}
@@ -1187,11 +1197,17 @@ def save_item(stem):
                 "label": desc.get("label", ""),
                 "phrases": phrases,
                 "zh": desc.get("zh", []),
+                "chosen": [
+                    str(p).strip() for p in (desc.get("chosen") or [])
+                    if str(p).strip()
+                ],
             }
-            write_json(
-                os.path.join(draft_dir(_root()), "descriptions", f"{stem}_obj{int(oid):04d}.json"),
-                out,
+            path = os.path.join(
+                draft_dir(_root()), "descriptions", f"{stem}_obj{int(oid):04d}.json"
             )
+            if _desc_unchanged(load_json(path), out):
+                continue
+            write_json(path, out)
     # captions: refresh token spans；无选用短语时强制 caption 为空
     if "captions" in data:
         caps = data["captions"]
@@ -1211,7 +1227,9 @@ def save_item(stem):
             for ph, span in zip(phrases, spans):
                 if isinstance(ph, dict):
                     ph["tokens_positive"] = span
-        write_json(os.path.join(draft_dir(_root()), "captions", f"{stem}.json"), caps)
+        cap_path = os.path.join(draft_dir(_root()), "captions", f"{stem}.json")
+        if load_json(cap_path) != caps:
+            write_json(cap_path, caps)
     return jsonify({"ok": True})
 
 
@@ -1222,7 +1240,8 @@ def refresh_desc(stem, obj_id):
     若 body 带 sentence_id：保留该 caption 已选用短语。
     加速策略（v0.4.5）：只打 1 次视觉模型；先回英文，缺中文不阻塞翻译；
     max_retries=1。前端再 ensure_zh 补中文。
-    合计最多 5 条；他用/近义不进入新候选；不足则按实有条数落盘。
+    合计最多 8 条；他用/近义/已锁特征维（如 red sedan 不再出 red car）不进入新候选；
+    不足则按实有条数落盘。已填 chosen 保留。
     """
     if not _root():
         return jsonify({"error": "未配置数据集"}), 400
@@ -1244,27 +1263,29 @@ def refresh_desc(stem, obj_id):
 
         keep = []
         avoid = []
-        if sentence_id is not None and 0 <= sentence_id < len(sents):
-            for ph in sents[sentence_id].get("phrases") or []:
-                if not isinstance(ph, dict) or ph.get("obj_id") != obj_id:
-                    continue
-                # 「保留源标签」不是描述候选，刷新时不作为 keep 种子
-                if ph.get("keep_source_label"):
-                    continue
-                p = (ph.get("phrase") or "").strip()
-                if p and p not in keep:
-                    keep.append(p)
+        chosen = [
+            str(p).strip() for p in (old or {}).get("chosen") or []
+            if str(p).strip()
+        ]
+        keep = list(chosen)
+        for p in (old or {}).get("phrases") or []:
+            if isinstance(p, str) and p.strip() and p.strip() not in avoid:
+                avoid.append(p.strip())
         for sent in sents:
             for ph in sent.get("phrases") or []:
                 if not isinstance(ph, dict) or ph.get("obj_id") != obj_id:
                     continue
                 if ph.get("keep_source_label"):
                     continue
+                for f in ph.get("features") or []:
+                    f = str(f).strip()
+                    if f and f not in avoid:
+                        avoid.append(f)
                 p = (ph.get("phrase") or "").strip()
                 if p and p not in avoid:
                     avoid.append(p)
 
-        DISPLAY_N = 5
+        DISPLAY_N = 8
         keep = keep[:DISPLAY_N]
         slots = max(0, DISPLAY_N - len(keep)) if keep else DISPLAY_N
         old_phrases = (old or {}).get("phrases") or []
@@ -1278,8 +1299,8 @@ def refresh_desc(stem, obj_id):
             """只复用已有中文；缺的留空，由前端 ensure_zh 补（不阻塞刷新）。"""
             return [old_zh_map.get(p, "") for p in phrases]
 
-        def _take_fresh(result, ban_l, ban_keys, ban_syn, n):
-            """精确 / 虚词折叠 / 同义折叠均视为重复，直接不收录。"""
+        def _take_fresh(result, ban_l, ban_keys, ban_syn, n, lock_axis=None):
+            """精确 / 虚词折叠 / 同义折叠 / 已锁特征维均视为重复，直接不收录。"""
             out_p = []
             if n <= 0:
                 return out_p
@@ -1293,6 +1314,8 @@ def refresh_desc(stem, obj_id):
                     continue
                 syn = phrase_synonym_key(p)
                 if syn and syn in ban_syn:
+                    continue
+                if lock_axis and shares_locked_axis(p, lock_axis):
                     continue
                 out_p.append(p)
                 ban_l.add(p.lower())
@@ -1311,6 +1334,7 @@ def refresh_desc(stem, obj_id):
             r["phrases"] = keep
             r["zh"] = _attach_zh_fast(keep)
             r["label"] = (old or {}).get("label") or r.get("label") or ""
+            r["chosen"] = chosen
             write_json(desc_path, r)
             return jsonify({
                 "ok": True, "description": r, "kept": keep,
@@ -1324,16 +1348,18 @@ def refresh_desc(stem, obj_id):
         ban_l = {p.lower() for p in avoid_for_gen}
         ban_keys = {phrase_content_key(p) for p in avoid_for_gen if phrase_content_key(p)}
         ban_syn = {phrase_synonym_key(p) for p in avoid_for_gen if phrase_synonym_key(p)}
+        lock_axis = locked_axis_tokens(keep) if keep else set()
 
-        # 单次视觉调用：有已选则带 seed；只生成英文以缩短耗时
+        # 单次视觉调用：已锁定短语换剩余特征维（不 seed 同维换皮）；只生成英文
         need = slots if keep else DISPLAY_N
         r = describe_one_object(
             _root(), stem, obj_id, client, rules,
             write=False, avoid_phrases=avoid_for_gen, min_phrases=need,
             with_zh=False, max_retries=1,
-            seed_phrases=keep if keep else None,
+            seed_phrases=None,
+            lock_phrases=keep if keep else None,
         )
-        fresh = _take_fresh(r, ban_l, ban_keys, ban_syn, need)
+        fresh = _take_fresh(r, ban_l, ban_keys, ban_syn, need, lock_axis=lock_axis)
         if len(fresh) < 1:
             raise ValueError("模型未返回可替换的新短语")
 
@@ -1372,6 +1398,7 @@ def refresh_desc(stem, obj_id):
         r["phrases"] = phrases
         r["zh"] = _attach_zh_fast(phrases)
         r["label"] = (old or {}).get("label") or r.get("label") or ""
+        r["chosen"] = chosen
         write_json(desc_path, r)
         return jsonify({
             "ok": True,
@@ -1579,7 +1606,10 @@ def export_api():
     data = request.json or {}
     scope = (data.get("scope") or "current").strip().lower()
     if scope == "all":
-        n = export_dataset(_root())
+        try:
+            n = export_dataset(_root())
+        except Exception as e:
+            return jsonify({"error": f"导出失败: {e}"}), 500
         out_dir = os.path.join(_root(), "jsons-GD")
         return jsonify({
             "ok": True,
@@ -1590,7 +1620,10 @@ def export_api():
     stem = (data.get("stem") or "").strip()
     if not stem:
         return jsonify({"error": "未指定 stem"}), 400
-    path = export_stem(_root(), stem)
+    try:
+        path = export_stem(_root(), stem)
+    except Exception as e:
+        return jsonify({"error": f"导出失败 {stem}: {e}"}), 500
     if not path:
         return jsonify({"error": "导出失败，缺少 draft"}), 400
     return jsonify({"ok": True, "scope": "current", "path": path, "count": 1})
@@ -1672,4 +1705,4 @@ if __name__ == "__main__":
     print(f"  describe: {resolve_describe_rules_path()}")
     print(f"  caption:  {resolve_caption_rules_path()}")
     print("  提示: 关闭启动窗口 / Ctrl+C 将释放本实例端口（刷新或关网页标签不会退出）\n")
-    app.run(host=args.host, port=args.port, debug=False, use_reloader=False)
+    app.run(host=args.host, port=args.port, debug=False, use_reloader=False, threaded=True)

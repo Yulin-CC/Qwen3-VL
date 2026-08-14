@@ -6,6 +6,7 @@
 
 import json
 import os
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -492,16 +493,62 @@ def match_segs_to_boxes(boxes_xyxy, segs):
 def load_objects_for_image(dataset_root, stem):
     """Load objects from draft/objects/{stem}.json if present."""
     p = os.path.join(draft_dir(dataset_root), "objects", f"{stem}.json")
-    if not os.path.isfile(p):
-        return None
-    with open(p, encoding="utf-8") as f:
-        return json.load(f)
+    return load_json(p)
 
 
 def write_json(path, data):
-    ensure_dir(os.path.dirname(path))
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    """原子写入，避免 open('w') 先截空后被另一线程读到空 JSON。"""
+    ensure_dir(os.path.dirname(path) or ".")
+    tmp = f"{path}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+        os.replace(tmp, path)
+    finally:
+        if os.path.isfile(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
+def load_json(path, default=None, repair=True):
+    """读 JSON。空文件重试；一份文件里拼了两段 JSON 时取第一段并可回写修复。"""
+    if not path or not os.path.isfile(path):
+        return default
+    last_err = None
+    for attempt in range(3):
+        try:
+            with open(path, encoding="utf-8") as f:
+                raw = f.read()
+        except OSError as e:
+            last_err = e
+            time.sleep(0.03)
+            continue
+        text = (raw or "").lstrip("\ufeff").strip()
+        if not text:
+            last_err = "empty"
+            time.sleep(0.03)
+            continue
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as e:
+            last_err = e
+            if "Extra data" in str(e):
+                try:
+                    obj, _end = json.JSONDecoder().raw_decode(text)
+                except Exception:
+                    obj = None
+                if obj is not None:
+                    if repair:
+                        try:
+                            write_json(path, obj)
+                        except Exception:
+                            pass
+                    return obj
+            time.sleep(0.03)
+    return default
 
 
 def phrase_token_span(caption: str, phrase: str):
@@ -522,6 +569,7 @@ def assign_phrase_token_spans(caption: str, phrases) -> list:
     """为多条短语分配互不重叠的 [start, end)。
 
     - 按长度从长到短贪心，每条最多一个 span
+    - 要求词边界，避免 a/with 命中 compact / without
     - 避免「green car」占住后「car」再抢同一段，或短串误标在长串内部
     - 返回与 phrases 等长的 list，元素为 [start,end) 或 None
     phrases 元素可以是 str，或带 "phrase" 的 dict。
@@ -537,6 +585,10 @@ def assign_phrase_token_spans(caption: str, phrases) -> list:
     spans = [None] * n
     claimed = []  # (start, end)
     order = sorted(range(n), key=lambda i: (-len(texts[i]), i))
+
+    def _word_char(ch):
+        return bool(ch) and ch.isalnum() and ("A" <= ch <= "Z" or "a" <= ch <= "z" or ch.isdigit())
+
     for i in order:
         ph = texts[i]
         if not ph:
@@ -548,7 +600,9 @@ def assign_phrase_token_spans(caption: str, phrases) -> list:
                 break
             end = idx + len(ph)
             overlap = any(not (end <= a or idx >= b) for a, b in claimed)
-            if not overlap:
+            left_ok = idx <= 0 or not _word_char(caption[idx - 1])
+            right_ok = end >= len(caption) or not _word_char(caption[end])
+            if not overlap and left_ok and right_ok:
                 spans[i] = [idx, end]
                 claimed.append((idx, end))
                 break

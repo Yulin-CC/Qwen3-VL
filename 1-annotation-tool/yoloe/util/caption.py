@@ -22,6 +22,7 @@ from common import (
     bbox_center,
     draft_dir,
     ensure_dir,
+    load_json,
     write_json,
 )
 from rules_io import load_caption_rules_text, set_rules_scene
@@ -46,9 +47,13 @@ def load_desc_map(dataset_root, stem):
     ddir = os.path.join(draft_dir(dataset_root), "descriptions")
     mapping = {}
     for p in Path(ddir).glob(f"{stem}_obj*.json"):
-        with open(p, encoding="utf-8") as f:
-            data = json.load(f)
-        mapping[int(data["obj_id"])] = data
+        data = load_json(str(p))
+        if not data:
+            continue
+        try:
+            mapping[int(data["obj_id"])] = data
+        except (TypeError, ValueError, KeyError):
+            continue
     return mapping
 
 
@@ -203,7 +208,7 @@ def used_phrases_by_obj(captions, exclude_sentence_id=None):
 
 
 def pick_phrases_for_group(objects, desc_map, obj_ids, rng, avoid_by_obj=None):
-    """从目标描述 phrases 中抽样；优先避开 label/object 占位词与其它 caption 已用短语。"""
+    """从目标描述 phrases 中抽样；优先 chosen，避开其它 caption 已用短语。不组词。"""
     id2obj = {o["obj_id"]: o for o in objects}
     avoid_by_obj = avoid_by_obj or {}
     phrases = []
@@ -211,21 +216,28 @@ def pick_phrases_for_group(objects, desc_map, obj_ids, rng, avoid_by_obj=None):
         obj = id2obj[oid]
         desc = desc_map.get(oid, {})
         opts = [x for x in (desc.get("phrases") or []) if isinstance(x, str) and x.strip()]
+        chosen = [x for x in (desc.get("chosen") or []) if isinstance(x, str) and x.strip()]
         strong = [x for x in opts if not _is_weak_phrase(x, obj["label"])]
-        pool = strong or opts or [obj["label"]]
+        pool = chosen or strong or opts or [obj["label"]]
         avoid = avoid_by_obj.get(int(oid)) or set()
-        if avoid:
-            fresh = [x for x in pool if x not in avoid]
+        avoid_l = {str(a).strip().lower() for a in avoid}
+        if avoid_l:
+            fresh = [x for x in pool if x.strip().lower() not in avoid_l]
             if fresh:
                 pool = fresh
-        # 偏好稍长、信息更多的短语
         pool = sorted(pool, key=lambda s: (-len(s.split()), -len(s)))
         top = pool[: max(1, min(3, len(pool)))]
-        phrases.append({
+        phrase = rng.choice(top)
+        row = {
             "obj_id": oid,
-            "phrase": rng.choice(top),
+            "phrase": phrase,
             "label": obj["label"],
-        })
+        }
+        if phrase.strip().lower() == (obj["label"] or "").strip().lower():
+            row["keep_source_label"] = True
+        else:
+            row["features"] = [phrase]
+        phrases.append(row)
     return phrases
 
 
@@ -361,6 +373,9 @@ def ensure_phrases_in_caption(caption, phrases):
         }
         if p.get("keep_source_label"):
             row["keep_source_label"] = True
+        feats = [str(f).strip() for f in (p.get("features") or []) if str(f).strip()]
+        if feats:
+            row["features"] = feats[:2]
         out.append(row)
     return caption, out
 
@@ -391,14 +406,14 @@ def locked_phrases_from_entry(sent, objects, desc_map=None):
         if oid not in valid or not phrase:
             continue
         keep_label = bool(ph.get("keep_source_label"))
-        if desc_map is not None and not keep_label:
+        feats = [str(f).strip() for f in (ph.get("features") or []) if str(f).strip()][:2]
+        if desc_map is not None and not keep_label and not feats:
             opts = {
                 (x or "").strip().lower()
                 for x in ((desc_map.get(oid) or {}).get("phrases") or [])
                 if isinstance(x, str) and x.strip()
             }
             if opts and phrase.lower() not in opts:
-                # 描述里没有的短语不参与锁定（避免 caption 正文反推/脏数据改选用）
                 continue
         key = (oid, phrase.lower(), keep_label)
         if key in seen:
@@ -411,6 +426,8 @@ def locked_phrases_from_entry(sent, objects, desc_map=None):
         }
         if keep_label:
             row["keep_source_label"] = True
+        if feats:
+            row["features"] = feats
         out.append(row)
     return out
 
@@ -490,12 +507,14 @@ def regenerate_single_caption(dataset_root, stem, sentence_id, client=None, seed
     """
     obj_path = os.path.join(draft_dir(dataset_root), "objects", f"{stem}.json")
     out_path = os.path.join(draft_dir(dataset_root), "captions", f"{stem}.json")
-    with open(obj_path, encoding="utf-8") as f:
-        meta = json.load(f)
+    meta = load_json(obj_path)
+    if not meta:
+        raise FileNotFoundError(f"无 objects 数据: {stem}")
     if not os.path.isfile(out_path):
         raise FileNotFoundError(f"无 caption draft: {stem}")
-    with open(out_path, encoding="utf-8") as f:
-        old = json.load(f)
+    old = load_json(out_path)
+    if not old:
+        raise FileNotFoundError(f"caption draft 损坏: {stem}")
     caps = old.get("captions") or []
     if not (0 <= sentence_id < len(caps)):
         raise IndexError(f"sentence_id 越界: {sentence_id}")
@@ -661,12 +680,13 @@ def add_caption_prefer_uncovered(dataset_root, stem, client=None, seed=None):
     """追加一条 caption，优先覆盖初始 5 条之外尚未出现的目标。"""
     obj_path = os.path.join(draft_dir(dataset_root), "objects", f"{stem}.json")
     out_path = os.path.join(draft_dir(dataset_root), "captions", f"{stem}.json")
-    with open(obj_path, encoding="utf-8") as f:
-        meta = json.load(f)
+    meta = load_json(obj_path)
+    if not meta:
+        raise FileNotFoundError(f"无 objects 数据: {stem}")
+    old = None
     if os.path.isfile(out_path):
-        with open(out_path, encoding="utf-8") as f:
-            old = json.load(f)
-    else:
+        old = load_json(out_path)
+    if not old:
         old = {
             "stem": stem,
             "image": meta["image"],
@@ -703,11 +723,13 @@ def caption_one_image(dataset_root, stem, client=None, n_captions=5, seed=None, 
     obj_path = os.path.join(draft_dir(dataset_root), "objects", f"{stem}.json")
     out_path = os.path.join(draft_dir(dataset_root), "captions", f"{stem}.json")
     if os.path.isfile(out_path) and not force:
-        with open(out_path, encoding="utf-8") as f:
-            return json.load(f)
+        existing = load_json(out_path)
+        if existing:
+            return existing
 
-    with open(obj_path, encoding="utf-8") as f:
-        meta = json.load(f)
+    meta = load_json(obj_path)
+    if not meta:
+        raise FileNotFoundError(f"无 objects 数据: {stem}")
     objects = meta["objects"]
     desc_map = load_desc_map(dataset_root, stem)
     rng = random.Random(seed if seed is not None else hash(stem) & 0xFFFFFFFF)
@@ -736,7 +758,51 @@ def caption_one_image(dataset_root, stem, client=None, n_captions=5, seed=None, 
         "captions": captions,
     }
     write_json(out_path, result)
+    _sync_chosen_from_captions(dataset_root, stem, captions, desc_map)
     return result
+
+
+def _sync_chosen_from_captions(dataset_root, stem, captions, desc_map):
+    """生成后把各 caption 锁定短语写回 descriptions.chosen，供填空 UI。"""
+    chosen = {}
+    for sent in captions or []:
+        for ph in sent.get("phrases") or []:
+            if not isinstance(ph, dict) or ph.get("keep_source_label"):
+                continue
+            try:
+                oid = int(ph.get("obj_id"))
+            except (TypeError, ValueError):
+                continue
+            feats = [
+                str(f).strip() for f in (ph.get("features") or [])
+                if str(f).strip()
+            ]
+            if not feats:
+                p = (ph.get("phrase") or "").strip()
+                if p:
+                    feats = [p]
+            bucket = chosen.setdefault(oid, [])
+            for f in feats:
+                if f.lower() not in {x.lower() for x in bucket}:
+                    bucket.append(f)
+    ddir = os.path.join(draft_dir(dataset_root), "descriptions")
+    for oid, feats in chosen.items():
+        desc = dict(desc_map.get(oid) or {})
+        desc["obj_id"] = int(oid)
+        desc["stem"] = stem
+        desc["chosen"] = feats
+        phrases = [p for p in (desc.get("phrases") or []) if isinstance(p, str) and p.strip()]
+        have = {p.lower() for p in phrases}
+        for f in feats:
+            if f.lower() not in have:
+                phrases.append(f)
+                have.add(f.lower())
+                zh = list(desc.get("zh") or [])
+                while len(zh) < len(phrases):
+                    zh.append("")
+                desc["zh"] = zh
+        desc["phrases"] = phrases
+        write_json(os.path.join(ddir, f"{stem}_obj{int(oid):04d}.json"), desc)
 
 
 def captions_need_rebuild(dataset_root, stem) -> bool:
@@ -744,8 +810,7 @@ def captions_need_rebuild(dataset_root, stem) -> bool:
     cap_path = os.path.join(draft_dir(dataset_root), "captions", f"{stem}.json")
     if not os.path.isfile(cap_path):
         return True
-    with open(cap_path, encoding="utf-8") as f:
-        caps = json.load(f)
+    caps = load_json(cap_path) or {}
     desc_map = load_desc_map(dataset_root, stem)
     if not any((d or {}).get("source") == "vllm" for d in desc_map.values()):
         return False

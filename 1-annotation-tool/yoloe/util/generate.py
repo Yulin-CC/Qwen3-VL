@@ -6,7 +6,6 @@
 """
 
 import argparse
-import json
 import os
 import sys
 from pathlib import Path
@@ -102,6 +101,7 @@ def assess_draft(dataset_root, limit=None, jsons_dirname="jsons", geometry=None,
     from common import (
         draft_dir,
         list_image_stems,
+        load_json,
         normalize_images_dirname,
         normalize_jsons_dirname,
         read_draft_config,
@@ -171,17 +171,15 @@ def assess_draft(dataset_root, limit=None, jsons_dirname="jsons", geometry=None,
         from describe import is_placeholder_desc
 
         for stem in check_stems:
-            with open(os.path.join(obj_dir, f"{stem}.json"), encoding="utf-8") as f:
-                meta = json.load(f)
+            meta = load_json(os.path.join(obj_dir, f"{stem}.json")) or {}
             for obj in meta.get("objects") or []:
                 oid = obj["obj_id"]
                 path = os.path.join(desc_dir, f"{stem}_obj{oid:04d}.json")
                 if not os.path.isfile(path):
                     missing_desc += 1
                     continue
-                with open(path, encoding="utf-8") as f:
-                    desc = json.load(f)
-                if is_placeholder_desc(desc):
+                desc = load_json(path)
+                if desc is None or is_placeholder_desc(desc):
                     missing_desc += 1
 
             if captions_need_rebuild(dataset_root, stem):
@@ -313,7 +311,7 @@ def run_generate(
 
     if "describe" in stages:
         from describe import describe_dataset, fallback_phrases
-        from common import draft_dir, write_json
+        from common import draft_dir, load_json, write_json
         _log("→ stage: describe")
         if no_llm:
             obj_dir = os.path.join(draft_dir(dataset_root), "objects")
@@ -324,9 +322,8 @@ def run_generate(
                 stems = stems[:limit]
             total = len(stems)
             for i, stem in enumerate(stems, start=1):
-                with open(os.path.join(obj_dir, f"{stem}.json"), encoding="utf-8") as f:
-                    meta = json.load(f)
-                for obj in meta["objects"]:
+                meta = load_json(os.path.join(obj_dir, f"{stem}.json")) or {}
+                for obj in meta.get("objects") or []:
                     out_p = os.path.join(out_dir, f"{stem}_obj{obj['obj_id']:04d}.json")
                     if not force and os.path.isfile(out_p):
                         continue

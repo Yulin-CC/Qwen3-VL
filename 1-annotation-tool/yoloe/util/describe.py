@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from tqdm import tqdm
 
-from common import draft_dir, ensure_dir, write_json
+from common import draft_dir, ensure_dir, load_json, write_json
 from rules_io import (
     get_rules_scene,
     load_describe_rules,
@@ -40,6 +40,9 @@ SYSTEM_PROMPT = (
     "helmet ≈ hard hat). "
     "Do not re-offer synonyms of already-used phrases either "
     "(if avoid has helmet, do not emit hard hat). "
+    "If some phrases are already locked, do NOT reuse their distinctive "
+    "modifiers (red sedan → not red car / red private car); "
+    "switch to remaining axes (parked car, car with sunroof). "
     "No markdown, no thinking."
 )
 
@@ -114,6 +117,36 @@ def phrase_synonym_key(phrase: str) -> str:
     return " ".join(_canonicalize_tokens(_content_tokens(phrase)))
 
 
+# 类别中心词：不算「已锁特征维」。red sedan 只锁 red，不锁 sedan，刷新仍可出 SUV。
+_CLASS_HEADS = frozenset({
+    "person", "people", "man", "woman", "child", "boy", "girl", "adult", "human",
+    "car", "sedan", "suv", "coupe", "hatchback", "wagon", "van", "minivan", "jeep",
+    "truck", "pickup", "bus", "taxi", "cab", "vehicle", "automobile", "auto",
+    "motorcycle", "motorbike", "bike", "bicycle", "scooter", "moped",
+    "boat", "ship", "vessel", "airplane", "aircraft", "plane", "helicopter",
+    "object", "item", "specialvehicle",
+})
+
+
+def phrase_axis_tokens(phrase: str):
+    """去掉虚词与类别中心词后的特征维 token（颜色/配件/动作等）。"""
+    toks = _canonicalize_tokens(_content_tokens(phrase))
+    return {t for t in toks if t and t not in _CLASS_HEADS}
+
+
+def locked_axis_tokens(phrases) -> set:
+    axes = set()
+    for p in phrases or []:
+        axes |= phrase_axis_tokens(p if isinstance(p, str) else str(p or ""))
+    return axes
+
+
+def shares_locked_axis(phrase: str, lock_axis) -> bool:
+    if not lock_axis:
+        return False
+    return bool(phrase_axis_tokens(phrase) & lock_axis)
+
+
 def is_near_duplicate_phrase(phrase: str, ban_keys) -> bool:
     key = phrase_content_key(phrase)
     if not key:
@@ -175,11 +208,12 @@ def is_placeholder_desc(desc) -> bool:
 
 
 def describe_object(client: VLLMClient, crop_abs: str, label: str, rules: str = "",
-                    avoid_phrases=None, min_phrases=5, with_zh: bool = False,
-                    max_retries: int = 3, seed_phrases=None):
+                    avoid_phrases=None, min_phrases=8, with_zh: bool = False,
+                    max_retries: int = 3, seed_phrases=None, lock_phrases=None):
     # 规则全文进 user prompt（与 caption 一致）；任务指令置后
     # with_zh=True：同一次视觉调用带回中文，避免刷新后再串行翻译
     # seed_phrases：围绕已选「接近但不贴切」的短语生成更贴切变体
+    # lock_phrases：审阅已锁定；新短语须换特征维，禁止同色/同修饰换皮
     avoid = [
         str(p).strip() for p in (avoid_phrases or [])
         if isinstance(p, str) and str(p).strip()
@@ -188,7 +222,12 @@ def describe_object(client: VLLMClient, crop_abs: str, label: str, rules: str = 
         str(p).strip() for p in (seed_phrases or [])
         if isinstance(p, str) and str(p).strip()
     ]
-    need = max(1, int(min_phrases or 5))
+    locked = [
+        str(p).strip() for p in (lock_phrases or [])
+        if isinstance(p, str) and str(p).strip()
+    ]
+    lock_axis = locked_axis_tokens(locked)
+    need = max(1, int(min_phrases or 8))
     retries = max(1, int(max_retries or 1))
     avoid_line = ""
     if avoid:
@@ -201,6 +240,20 @@ def describe_object(client: VLLMClient, crop_abs: str, label: str, rules: str = 
             f"Emit DIFFERENT attribute axes instead "
             f"(e.g. if helmet was used → prefer shirt / standing / location).\n"
         )
+    lock_line = ""
+    if locked:
+        listed = "; ".join(locked[:8])
+        mods = ", ".join(sorted(lock_axis)[:12]) if lock_axis else "(distinctive modifiers in the locked phrases)"
+        lock_line = (
+            f"LOCKED phrases (annotator already chose these; keep their attributes occupied): {listed}.\n"
+            f"Do NOT reuse these distinctive modifiers in any NEW phrase: {mods}.\n"
+            f"Write remaining visible axes instead: action/state, location, part/accessory, "
+            f"other appearance (not the locked modifiers). Other subtype words are OK "
+            f"(sedan locked → SUV with sunroof OK; red locked → red car FORBIDDEN).\n"
+            f"Bad: red sedan → red car / red private car. "
+            f"Good: parked car; car with sunroof.\n"
+        )
+        seeds = []
     seed_line = ""
     if seeds:
         listed = "; ".join(seeds[:8])
@@ -254,6 +307,7 @@ def describe_object(client: VLLMClient, crop_abs: str, label: str, rules: str = 
         f"label=specialvehicle → special/utility/engineering vehicle, not private car or motorcycle). "
         f"Subtype words are OK only within the same class family "
         f"(car→sedan/SUV/taxi OK).\n"
+        f"{lock_line}"
         f"{seed_line}"
         f"{cover_line}"
         f"Prefer keeping a class-family head noun in the phrases.\n"
@@ -295,6 +349,8 @@ def describe_object(client: VLLMClient, crop_abs: str, label: str, rules: str = 
                 syn = phrase_synonym_key(p)
                 if syn and syn in ban_syn:
                     continue
+                if lock_axis and shares_locked_axis(p, lock_axis):
+                    continue
                 if key:
                     ban_keys.add(key)
                 if syn:
@@ -329,12 +385,14 @@ def describe_object(client: VLLMClient, crop_abs: str, label: str, rules: str = 
 
 
 def describe_one_object(dataset_root, stem, obj_id, client: VLLMClient, rules: str = "",
-                        write: bool = True, avoid_phrases=None, min_phrases=5,
-                        with_zh: bool = False, max_retries: int = 3, seed_phrases=None):
+                        write: bool = True, avoid_phrases=None, min_phrases=8,
+                        with_zh: bool = False, max_retries: int = 3, seed_phrases=None,
+                        lock_phrases=None):
     """生成单目标描述。write=False 时只返回结果，由调用方决定是否落盘（避免半成品覆盖）。"""
     obj_path = os.path.join(draft_dir(dataset_root), "objects", f"{stem}.json")
-    with open(obj_path, encoding="utf-8") as f:
-        meta = json.load(f)
+    meta = load_json(obj_path)
+    if not meta:
+        raise FileNotFoundError(f"无 objects 数据: {stem}")
     obj = next((o for o in meta["objects"] if o["obj_id"] == obj_id), None)
     if not obj:
         raise ValueError(f"obj_id 不存在: {obj_id}")
@@ -343,6 +401,7 @@ def describe_one_object(dataset_root, stem, obj_id, client: VLLMClient, rules: s
         client, crop_abs, obj["label"], rules,
         avoid_phrases=avoid_phrases, min_phrases=min_phrases,
         with_zh=with_zh, max_retries=max_retries, seed_phrases=seed_phrases,
+        lock_phrases=lock_phrases,
     )
     desc["obj_id"] = obj_id
     desc["stem"] = stem
@@ -361,14 +420,12 @@ def _collect_jobs(dataset_root, stems, force=False):
         obj_path = os.path.join(draft_dir(dataset_root), "objects", f"{stem}.json")
         if not os.path.isfile(obj_path):
             continue
-        with open(obj_path, encoding="utf-8") as f:
-            meta = json.load(f)
-        for obj in meta["objects"]:
+        meta = load_json(obj_path)
+        if not meta:
+            continue
+        for obj in meta.get("objects") or []:
             out_p = os.path.join(out_dir, f"{stem}_obj{obj['obj_id']:04d}.json")
-            existing = None
-            if os.path.isfile(out_p):
-                with open(out_p, encoding="utf-8") as f:
-                    existing = json.load(f)
+            existing = load_json(out_p) if os.path.isfile(out_p) else None
             if not force and existing is not None and not is_placeholder_desc(existing):
                 continue
             jobs.append({
@@ -406,19 +463,19 @@ def describe_image_objects(dataset_root, stem, client: VLLMClient, rules: str, f
         results.append(_run_job(client, job, rules=rules or ""))
     # also return skipped existing
     obj_path = os.path.join(draft_dir(dataset_root), "objects", f"{stem}.json")
-    if not os.path.isfile(obj_path):
+    meta = load_json(obj_path)
+    if not meta:
         return results
-    with open(obj_path, encoding="utf-8") as f:
-        meta = json.load(f)
     done_ids = {r["obj_id"] for r in results}
-    for obj in meta["objects"]:
+    for obj in meta.get("objects") or []:
         if obj["obj_id"] in done_ids:
             continue
         p = os.path.join(draft_dir(dataset_root), "descriptions",
                          f"{stem}_obj{obj['obj_id']:04d}.json")
         if os.path.isfile(p):
-            with open(p, encoding="utf-8") as f:
-                results.append(json.load(f))
+            data = load_json(p)
+            if data:
+                results.append(data)
     return results
 
 
