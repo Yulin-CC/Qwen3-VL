@@ -58,7 +58,7 @@ yoloe/
 
 界面顶栏可切换服务（绿/红点）。也可用 `VLLM_BASE_URL` / `VLLM_MODEL`。
 
-**便携包：** 维护者双击 `build/一键打包.bat` → `build/0-dist/GroundingReview-portable-v0.5.4.zip`。同事解压后双击 `start.bat`（`http://localhost:8090`，端口占用自动 +1）。说明见 `build/使用说明.txt`。
+**便携包：** 维护者双击 `build/一键打包.bat` → `build/0-dist/GroundingReview-portable-v0.5.5.zip`。同事解压后双击 `start.bat`（`http://localhost:8090`，端口占用自动 +1）。说明见 `build/使用说明.txt`。
 
 ---
 

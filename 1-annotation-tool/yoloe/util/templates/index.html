@@ -428,6 +428,8 @@ let descZhToken = 0;     // 单目标刷新后补中文的序号
 let highlightObjId = null;  // 右侧点击高亮的目标
 let dirty = false;
 let editRev = 0;  // 本地编辑代数：save 中途若又改了，禁止误清 dirty
+/** 进行中的目标描述刷新 Promise；刷新期间锁切图，结束后再允许导航 */
+const descRefreshJobs = new Set();
 let genPolling = false;
 let sideTab = 'objs';
 let selectedJsons = 'jsons';
@@ -2646,9 +2648,10 @@ async function loadStem(stem){
       return;
     }
     if (curStem && item && !confirmLeaveIfSlotsPending()) return;
-    invalidateCaptionRefresh();
+    // 描述刷新后台继续（结果写回原 stem）；caption 防抖队列仍随切图作废
     const ok = await saveIfDirty();
     if (!ok) return;
+    invalidateCaptionRefresh();
   }
   invalidateCaptionRefresh();
   if (prefetchZhTimer){
@@ -2822,135 +2825,175 @@ async function refreshObjectDescription(oid){
   if (!item || !curStem) return;
   const oidN = normObjId(oid);
   if (oidN == null) return;
-  const caps = item.captions.captions || [];
-  const active = caps[activeCap];
-  if (!active) return;
-  const obj = (item.meta.objects || []).find(o => normObjId(o.obj_id) === oidN);
-  if (!obj) return;
-  const key = String(oidN);
-  const card = document.querySelector(`#obj-list .obj-card[data-oid="${oidN}"]`);
-  const keepLabelOn = objHasKeepSourceLabel(active, oidN);
-  const labelPh = sourceLabelPhraseForObj(obj);
-  const used = usedPhraseSets(active);
-  const usedDesc = new Set(
-    [...(used[oidN] || [])].filter(ph => {
-      if (keepLabelOn && String(ph).toLowerCase() === labelPh.toLowerCase()) return false;
-      return true;
-    })
-  );
-  const prev = item.descriptions[key] ? JSON.parse(JSON.stringify(item.descriptions[key])) : null;
-  const nKeep = getChosen(oidN).length;
-  const btn = card ? card.querySelector('.refresh-btn') : null;
-  const btnText = btn ? btn.textContent : '刷新';
-  if (card) card.classList.add('refreshing');
-  if (btn){ btn.textContent = '刷新中…'; btn.disabled = true; }
-  setStatus(nKeep
-    ? `刷新 obj ${oidN} 描述（保留 ${nKeep} 条已填，其余更新…）`
-    : `刷新 obj ${oidN} 描述（候选最多 ${PHRASE_DISPLAY_LIMIT} 条）…`);
+  const stemAtStart = curStem;
+  const capIdxAtStart = activeCap;
+  let settle;
+  const job = new Promise(resolve => { settle = resolve; });
+  descRefreshJobs.add(job);
   try {
-    const okSave = await saveIfDirty();
-    if (!okSave) return;
-    const res = await api(`/api/refresh_desc/${encodeURIComponent(curStem)}/${oidN}`, {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({sentence_id: activeCap}),
-    });
-    if (res.error){
-      alert('刷新失败，已保留原描述：\n' + res.error);
-      if (prev) item.descriptions[key] = prev;
-      renderObjects();
-      setStatus(`obj ${oidN} 刷新失败`);
-      return;
-    }
-    const desc = res.description || {};
-    const keepSelL = new Set([...usedDesc].map(s => String(s).toLowerCase()));
-    const keepKeys = new Set([...usedDesc].map(phraseContentKey).filter(Boolean));
-    const seenSyn = new Set([...usedDesc].map(phraseSynonymKey).filter(Boolean));
-    const keepChosen = getChosen(oidN);
-    const lockSet = new Set();
-    keepChosen.forEach(c => phraseAxisTokenSet(c).forEach(t => lockSet.add(t)));
-    const rawPh = (desc.phrases || []).map(p => String(p || '').trim());
-    const rawZh = Array.isArray(desc.zh) ? desc.zh : [];
-    const newPhrases = [];
-    const newZh = [];
-    const seenKeys = new Set(keepKeys);
-    rawPh.forEach((p, i) => {
-      if (!p) return;
-      const k = p.toLowerCase();
-      const ck = phraseContentKey(p);
-      const sk = phraseSynonymKey(p);
-      if (!keepSelL.has(k)){
-        if (newPhrases.some(x => x.toLowerCase() === k)) return;
-        if (ck && seenKeys.has(ck)) return;
-        if (sk && seenSyn.has(sk)) return;
-        if (sharesLockedAxis(p, lockSet)) return;
+    const caps = item.captions.captions || [];
+    const active = caps[activeCap];
+    if (!active) return;
+    const obj = (item.meta.objects || []).find(o => normObjId(o.obj_id) === oidN);
+    if (!obj) return;
+    const key = String(oidN);
+    const card = document.querySelector(`#obj-list .obj-card[data-oid="${oidN}"]`);
+    const keepLabelOn = objHasKeepSourceLabel(active, oidN);
+    const labelPh = sourceLabelPhraseForObj(obj);
+    const used = usedPhraseSets(active);
+    const usedDesc = new Set(
+      [...(used[oidN] || [])].filter(ph => {
+        if (keepLabelOn && String(ph).toLowerCase() === labelPh.toLowerCase()) return false;
+        return true;
+      })
+    );
+    const prev = item.descriptions[key] ? JSON.parse(JSON.stringify(item.descriptions[key])) : null;
+    const nKeep = getChosen(oidN).length;
+    const btn = card ? card.querySelector('.refresh-btn') : null;
+    const btnText = btn ? btn.textContent : '刷新';
+    if (card) card.classList.add('refreshing');
+    if (btn){ btn.textContent = '刷新中…'; btn.disabled = true; }
+    setStatus(nKeep
+      ? `刷新 obj ${oidN} 描述（保留 ${nKeep} 条已填，其余更新…）`
+      : `刷新 obj ${oidN} 描述（候选最多 ${PHRASE_DISPLAY_LIMIT} 条）…`);
+    try {
+      const okSave = await saveIfDirty();
+      if (!okSave) return;
+      // 切走也继续：后台刷完写回 stemAtStart，不挡切图
+      const res = await api(`/api/refresh_desc/${encodeURIComponent(stemAtStart)}/${oidN}`, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({sentence_id: capIdxAtStart}),
+      });
+      const stillHere = () => curStem === stemAtStart && item;
+      if (res.error){
+        if (stillHere()){
+          alert('刷新失败，已保留原描述：\n' + res.error);
+          if (prev) item.descriptions[key] = prev;
+          renderObjects();
+          setStatus(`obj ${oidN} 刷新失败`);
+        }
+        return;
       }
-      if (ck) seenKeys.add(ck);
-      if (sk) seenSyn.add(sk);
-      newPhrases.push(p);
-      newZh.push((rawZh[i] && String(rawZh[i])) || '');
-    });
-    keepChosen.forEach(c => {
-      if (!newPhrases.some(p => normPhrase(p).toLowerCase() === c.toLowerCase())){
-        newPhrases.push(c);
-        newZh.push('');
+      const desc = res.description || {};
+      const keepSelL = new Set([...usedDesc].map(s => String(s).toLowerCase()));
+      const keepKeys = new Set([...usedDesc].map(phraseContentKey).filter(Boolean));
+      const seenSyn = new Set([...usedDesc].map(phraseSynonymKey).filter(Boolean));
+      const keepChosen = stillHere() ? getChosen(oidN) : [
+        ...((prev && prev.chosen) || []),
+        ...(res.kept || []),
+      ].map(normPhrase).filter(Boolean);
+      const lockSet = new Set();
+      keepChosen.forEach(c => phraseAxisTokenSet(c).forEach(t => lockSet.add(t)));
+      const rawPh = (desc.phrases || []).map(p => String(p || '').trim());
+      const rawZh = Array.isArray(desc.zh) ? desc.zh : [];
+      const newPhrases = [];
+      const newZh = [];
+      const seenKeys = new Set(keepKeys);
+      rawPh.forEach((p, i) => {
+        if (!p) return;
+        const k = p.toLowerCase();
+        const ck = phraseContentKey(p);
+        const sk = phraseSynonymKey(p);
+        if (!keepSelL.has(k)){
+          if (newPhrases.some(x => x.toLowerCase() === k)) return;
+          if (ck && seenKeys.has(ck)) return;
+          if (sk && seenSyn.has(sk)) return;
+          if (sharesLockedAxis(p, lockSet)) return;
+        }
+        if (ck) seenKeys.add(ck);
+        if (sk) seenSyn.add(sk);
+        newPhrases.push(p);
+        newZh.push((rawZh[i] && String(rawZh[i])) || '');
+      });
+      keepChosen.forEach(c => {
+        if (!newPhrases.some(p => normPhrase(p).toLowerCase() === c.toLowerCase())){
+          newPhrases.push(c);
+          newZh.push('');
+        }
+      });
+      while (newPhrases.length > PHRASE_DISPLAY_LIMIT){
+        const last = newPhrases[newPhrases.length - 1];
+        if (keepChosen.some(c => c.toLowerCase() === normPhrase(last).toLowerCase())) break;
+        newPhrases.pop();
+        newZh.pop();
       }
-    });
-    while (newPhrases.length > PHRASE_DISPLAY_LIMIT){
-      const last = newPhrases[newPhrases.length - 1];
-      if (keepChosen.some(c => c.toLowerCase() === normPhrase(last).toLowerCase())) break;
-      newPhrases.pop();
-      newZh.pop();
-    }
-    if (!newPhrases.length){
-      alert('刷新失败：未返回有效描述，已保留原描述');
-      if (prev) item.descriptions[key] = prev;
+      if (!newPhrases.length){
+        if (stillHere()){
+          alert('刷新失败：未返回有效描述，已保留原描述');
+          if (prev) item.descriptions[key] = prev;
+          renderObjects();
+          setStatus(`obj ${oidN} 刷新未生效`);
+        }
+        return;
+      }
+      desc.phrases = newPhrases;
+      desc.zh = newZh;
+      desc.chosen = keepChosen;
+      desc.label = (desc.label || (prev && prev.label) || (obj && obj.label) || '');
+      if (!stillHere()){
+        // 已切走：后端 refresh_desc 已落盘原文；再补一刀前端过滤后的结果，避免丢 chosen
+        await api('/api/save/' + encodeURIComponent(stemAtStart), {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({
+            descriptions: {
+              [key]: {
+                label: desc.label,
+                phrases: desc.phrases,
+                zh: desc.zh,
+                chosen: desc.chosen,
+              },
+            },
+          }),
+        });
+        if (res.zh_pending || newZh.some(z => !String(z || '').trim())){
+          fillDescZhAsync(stemAtStart, oidN);
+        }
+        return;
+      }
+      item.descriptions[key] = desc;
+      refreshedDescAt[key] = Date.now();
+      markDirty();
       renderObjects();
-      setStatus(`obj ${oidN} 刷新未生效`);
-      return;
-    }
-    desc.phrases = newPhrases;
-    desc.zh = newZh;
-    desc.chosen = keepChosen;
-    item.descriptions[key] = desc;
-    refreshedDescAt[key] = Date.now();
-    markDirty();
-    renderObjects();
-    const nKept = (res.kept || []).length;
-    const nFresh = (res.refreshed || []).length;
-    setStatus(nKept
-      ? `obj ${oidN}：保留 ${nKept}，新刷 ${nFresh}（合计 ${newPhrases.length}）`
-      : `obj ${oidN} 描述已刷新（${newPhrases.length} 条）`);
-    // 英文先出；缺中文后台补，不挡刷新
-    if (res.zh_pending || newZh.some(z => !String(z || '').trim())){
-      fillDescZhAsync(curStem, oidN);
+      const nKept = (res.kept || []).length;
+      const nFresh = (res.refreshed || []).length;
+      setStatus(nKept
+        ? `obj ${oidN}：保留 ${nKept}，新刷 ${nFresh}（合计 ${newPhrases.length}）`
+        : `obj ${oidN} 描述已刷新（${newPhrases.length} 条）`);
+      if (res.zh_pending || newZh.some(z => !String(z || '').trim())){
+        fillDescZhAsync(stemAtStart, oidN);
+      }
+    } finally {
+      if (curStem === stemAtStart){
+        const card2 = document.querySelector(`#obj-list .obj-card[data-oid="${oidN}"]`);
+        const btn2 = card2 ? card2.querySelector('.refresh-btn') : null;
+        if (card2) card2.classList.remove('refreshing');
+        if (btn2){ btn2.textContent = btnText; btn2.disabled = false; }
+      }
     }
   } finally {
-    const card2 = document.querySelector(`#obj-list .obj-card[data-oid="${oidN}"]`);
-    const btn2 = card2 ? card2.querySelector('.refresh-btn') : null;
-    if (card2) card2.classList.remove('refreshing');
-    if (btn2){ btn2.textContent = btnText; btn2.disabled = false; }
+    descRefreshJobs.delete(job);
+    if (settle) settle();
   }
 }
 
-/** 刷新后补单个目标描述中文（不阻塞主流程；与整图 ensureZh 序号隔离） */
+/** 刷新后补单个目标描述中文（后台可写盘；仅仍停在该图时才改 UI） */
 async function fillDescZhAsync(stem, oid){
-  if (!stem || oid == null || !item) return;
-  const token = ++descZhToken;
+  if (!stem || oid == null) return;
   const oidN = normObjId(oid);
   try {
-    // 先落盘，保证 ensure_zh 读到与界面一致的英文短语
-    await saveIfDirty();
-    if (token !== descZhToken || curStem !== stem || !item) return;
+    if (curStem === stem && item) await saveIfDirty();
     const res = await api('/api/ensure_zh/' + encodeURIComponent(stem), {
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({obj_ids: [oidN], mode: 'descs'}),
     });
-    if (token !== descZhToken || curStem !== stem || !item) return;
     if (res.error) return;
-    mergeDescriptionsFromServer(res.descriptions);
-    renderObjects();
+    if (curStem === stem && item){
+      mergeDescriptionsFromServer(res.descriptions);
+      renderObjects();
+    }
   } catch (_){ /* 忽略：英文已可用 */ }
 }
 
