@@ -21,6 +21,7 @@ from common import (
     draft_dir,
     ensure_dir,
     find_image_path,
+    list_image_stems,
     list_images_options,
     list_jsons_options,
     list_label_filenames,
@@ -159,7 +160,9 @@ def _validate_dataset_full(root: str, jsons_dirname: str, images_dirname: str) -
     images_dirname = normalize_images_dirname(images_dirname)
     stats = {
         "n_json": 0,
+        "n_images": 0,
         "n_images_matched": 0,
+        "n_labels_skipped_no_image": 0,
         "n_shapes": 0,
         "n_rectangle": 0,
         "n_polygon": 0,
@@ -187,19 +190,14 @@ def _validate_dataset_full(root: str, jsons_dirname: str, images_dirname: str) -
     img_dir = resolve_images_dir(root, images_dirname)
     json_dir = resolve_jsons_dir(root, jsons_dirname)
     img_label = "根目录" if images_dirname == "." else images_dirname
+    img_stems = set()
     if not os.path.isdir(img_dir):
         hint = f"可选: {', '.join(img_options)}" if img_options else "未发现含图片的目录"
         errors.append(f"缺少图像目录 {img_label}: {img_dir}（{hint}）")
     else:
-        try:
-            has_img = any(
-                os.path.isfile(os.path.join(img_dir, n))
-                and Path(n).suffix.lower() in IMG_EXTS
-                for n in os.listdir(img_dir)
-            )
-        except OSError:
-            has_img = False
-        if not has_img:
+        img_stems = list_image_stems(img_dir)
+        stats["n_images"] = len(img_stems)
+        if not img_stems:
             errors.append(f"图像目录为空或无图片: {img_dir}")
 
     if not os.path.isdir(json_dir):
@@ -216,11 +214,23 @@ def _validate_dataset_full(root: str, jsons_dirname: str, images_dirname: str) -
         errors.append(f"{jsons_dirname}/ 下无 .json/.xml 标签: {json_dir}")
         return _fail(errors)
 
+    # 以图像为准：无对应图像的标签直接跳过，不报错、不计入校验总数
     seen_types = set()
     for fname in files:
-        stats["n_json"] += 1
         path = os.path.join(json_dir, fname)
         stem = Path(fname).stem
+        if img_stems and stem not in img_stems:
+            # imagePath 提示偶发与文件名不一致时再试一次
+            try:
+                peek = load_labelme(path)
+                hint_name = (peek.get("imagePath") or "").strip()
+            except Exception:
+                hint_name = ""
+            if not (hint_name and find_image_path(img_dir, stem, hint_name)):
+                stats["n_labels_skipped_no_image"] += 1
+                continue
+
+        stats["n_json"] += 1
         try:
             data = load_labelme(path)
         except Exception as e:
@@ -258,15 +268,13 @@ def _validate_dataset_full(root: str, jsons_dirname: str, images_dirname: str) -
             else:
                 stats["n_polygon"] += 1
 
-        if os.path.isdir(img_dir):
-            img = find_image_path(img_dir, stem, data.get("imagePath", ""))
-            if img:
-                stats["n_images_matched"] += 1
-            else:
-                errors.append(
-                    f"{fname}: 图像目录中找不到对应图像 "
-                    f"(stem={stem}, dir={img_label})"
-                )
+        stats["n_images_matched"] += 1
+
+    if stats["n_json"] == 0 and files:
+        errors.append(
+            f"标签均无对应图像，已跳过 {stats['n_labels_skipped_no_image']} 个空标签"
+            f"（以图像为准，当前图像数={stats['n_images']}）"
+        )
 
     if len(seen_types) > 1:
         geometry = "mixed"
@@ -319,11 +327,14 @@ def _soft_validate_from_draft(root, jsons_dirname, images_dirname, signature,
     if geom not in {"rectangle", "polygon", "mixed"}:
         return None
     n_labels = int(signature.get("n_labels") or 0)
-    if n_labels < 1:
+    n_images = int(signature.get("n_images") or 0)
+    # 以图像为准：齐套门槛取「有图可对齐」规模（标签与图像的交集上界）
+    n_expect = min(n_labels, n_images) if (n_labels and n_images) else (n_labels or n_images)
+    if n_expect < 1:
         return None
     n_obj = _count_json_stems(os.path.join(draft_dir(root), "objects"))
     n_cap = _count_json_stems(os.path.join(draft_dir(root), "captions"))
-    if n_obj < n_labels or n_cap < n_labels:
+    if n_obj < n_expect or n_cap < n_expect:
         return None
     img_dir = resolve_images_dir(root, images_dirname)
     if not os.path.isdir(img_dir):
@@ -337,8 +348,9 @@ def _soft_validate_from_draft(root, jsons_dirname, images_dirname, signature,
         "images_options": img_options,
         "errors": [],
         "stats": {
-            "n_json": n_labels,
-            "n_images_matched": int(signature.get("n_images") or 0),
+            "n_json": n_expect,
+            "n_images": n_images,
+            "n_images_matched": n_expect,
             "n_shapes": 0,
             "n_rectangle": 0,
             "n_polygon": 0,
@@ -374,9 +386,11 @@ def _try_resume_without_scan(root, jsons_dirname, images_dirname):
         if geom not in {"rectangle", "polygon", "mixed"}:
             return None
     n_labels = int(old_sig.get("n_labels") or result.get("stats", {}).get("n_json") or 0)
+    n_images = int(old_sig.get("n_images") or result.get("stats", {}).get("n_images") or 0)
+    n_expect = min(n_labels, n_images) if (n_labels and n_images) else (n_labels or n_images)
     n_obj = _count_json_stems(os.path.join(draft_dir(root), "objects"))
     n_cap = _count_json_stems(os.path.join(draft_dir(root), "captions"))
-    if n_labels < 1 or n_obj < n_labels or n_cap < n_labels:
+    if n_expect < 1 or n_obj < n_expect or n_cap < n_expect:
         return None
     img_dir = resolve_images_dir(root, images_dirname)
     json_dir = resolve_jsons_dir(root, jsons_dirname)
@@ -393,6 +407,8 @@ def _try_resume_without_scan(root, jsons_dirname, images_dirname):
     cached["from_cache"] = True
     cached["cache_path"] = f"{VALIDATE_LOG_NAME}(skip-scan)"
     stats = dict(cached.get("stats") or {})
+    stats["n_json"] = n_expect
+    stats["n_images"] = n_images
     stats["n_objects_draft"] = n_obj
     stats["n_captions_draft"] = n_cap
     cached["stats"] = stats

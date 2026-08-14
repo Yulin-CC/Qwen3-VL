@@ -89,24 +89,36 @@ def _desc_counts_by_stem(desc_dir):
 
 
 def assess_draft(dataset_root, limit=None, jsons_dirname="jsons", geometry=None,
-                 deep: bool = True) -> dict:
+                 deep: bool = True, images_dirname="images") -> dict:
     """
     缺啥补啥评估。不传 force：已有非占位结果视为完成。
     deep=False：打开数据集快速路径——只做文件存在性统计，不逐文件解析
                  JSON / 不跑 captions_need_rebuild（预生成齐套时可从几十秒降到秒级）。
+    以图像文件为准：缺图的 objects / 标签不计入宇宙。
     Returns:
       need_crop, need_describe, need_caption, ready, missing_* counts, stages[]
     """
     sys.path.insert(0, os.path.dirname(__file__))
-    from common import draft_dir, normalize_jsons_dirname, read_draft_config
+    from common import (
+        draft_dir,
+        list_image_stems,
+        normalize_images_dirname,
+        normalize_jsons_dirname,
+        read_draft_config,
+        resolve_images_dir,
+    )
 
     jsons_dirname = normalize_jsons_dirname(jsons_dirname)
+    images_dirname = normalize_images_dirname(images_dirname)
     obj_dir = os.path.join(draft_dir(dataset_root), "objects")
     desc_dir = os.path.join(draft_dir(dataset_root), "descriptions")
     cap_dir = os.path.join(draft_dir(dataset_root), "captions")
+    img_stems = list_image_stems(resolve_images_dir(dataset_root, images_dirname))
 
-    obj_stems = _listdir_stems(obj_dir)
-    cap_stems_set = set(_listdir_stems(cap_dir))
+    obj_stems = [s for s in _listdir_stems(obj_dir) if (not img_stems or s in img_stems)]
+    cap_stems_set = set(
+        s for s in _listdir_stems(cap_dir) if (not img_stems or s in img_stems)
+    )
     obj_stems_set = set(obj_stems)
 
     # 标签目录 / 几何属性切换后需重裁，才能让主窗口画正确的框/多边形
@@ -146,6 +158,8 @@ def assess_draft(dataset_root, limit=None, jsons_dirname="jsons", geometry=None,
             missing_desc = max(missing_desc, len(check_stems) - n_desc_files)
     else:
         stems = list_json_stems(dataset_root, limit=limit, jsons_dirname=jsons_dirname)
+        if img_stems:
+            stems = [s for s in stems if s in img_stems]
         if limit:
             keep = set(stems)
             obj_stems = [s for s in obj_stems if s in keep]
@@ -197,12 +211,14 @@ def assess_draft(dataset_root, limit=None, jsons_dirname="jsons", geometry=None,
         "ready": not stages,
         "force_crop": force_crop,
         "n_json": len(stems),
+        "n_images": len(img_stems),
         "n_objects": len(obj_stems),
         "missing_objects": len(missing_objects),
         "missing_desc": missing_desc,
         "missing_cap": missing_cap,
         "stages": stages,
         "jsons_dirname": jsons_dirname,
+        "images_dirname": images_dirname,
         "prev_jsons_dirname": prev_jsons or None,
         "geometry": cur_geom or None,
         "prev_geometry": prev_geom or None,
@@ -259,6 +275,7 @@ def run_generate(
     if stages is None:
         assessment = assess_draft(
             dataset_root, limit=limit, jsons_dirname=jsons_dirname,
+            images_dirname=images_dirname,
         )
         stages = set(assessment["stages"])
         _log(f"assess: {assessment}")

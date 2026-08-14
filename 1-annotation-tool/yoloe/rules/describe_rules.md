@@ -1,7 +1,7 @@
 # 📖 目标描述短语规则（用于 grounding）
 
 - **概述**: **通用性试验性的规则**，没有特殊的项目特点，只是为了验证多模态数据的生成流程和训练有效性。
-- **日期**: 2026-08-11
+- **日期**: 2026-08-13
 
 ---
 
@@ -29,6 +29,9 @@
 |外观轴|颜色、服装/配饰、车身涂装、反光/高亮部位、明显图案或装备外形；多条短语尽量换不同外观侧面，避免近重复|
 |弱化项|纯角色词（worker/student）或纯动作（walking/parked）可作少数补充，**不宜占满全部短语**|
 |推荐落地|短语中宜出现与 label 同族的中心词，并尽量带外观修饰（red sedan；person in yellow vest）|
+|条数上限|每个目标最多 **5** 条候选短语；不足 5 条时按实有条数即可，勿注水|
+|同组维度|同一 phrases 列表内应拉开维度（如 `helmet` / `shirt` / `standing`），勿堆同义侧面|
+|近义禁止|同组候选禁止重复：①仅改介词/分词（~~person in red helmet~~ ≈ ~~person wearing red helmet~~）；②同义名词（~~helmet~~ ≈ ~~hard hat~~）。审阅侧：未选的精确他用隐藏；已选他用虚线提示点灭（近义他用后续）|
 
 ## 2 目标描述-具体规则
 
@@ -46,11 +49,12 @@
 
 |要求|说明|
 |---|---|
-|多样性|各短语彼此有区分，避免近重复|
+|多样性|各短语彼此有区分；同组优先换属性轴（外观/动作/方位等），不要同内容换皮或同义堆叠|
 |适用场景|偏普适认知的描述，避免特殊行业或生僻用语|
 |冲突处理|图与 label 冲突时**以 label 为准**；只补该类下可见的颜色/状态，不改换物体种类|
 |串类反例|即使裁剪看起来像其它类也禁止改写。例：label=`car` → ~~green motorcycle~~ / ~~scooter~~；label=`specialvehicle` → ~~private car~~ / ~~motorbike~~|
 |描述组合|优先从属性/外观/方位/部分特征中取 **1–2 维**组合（如 `red car`；`car on the road`；`car with sunroof`）；避免三元以上堆叠（如 ~~red car on the road with sunroof~~）|
+|近义反例|重复：~~person in red helmet~~ + ~~person wearing red helmet~~；~~yellow helmet~~ + ~~yellow hard hat~~。宜换维度，如已用 helmet → 再给 `person in yellow vest` / `person standing`，不要再给 hard hat|
 
 ## 4 输出格式（暂时不需要改动）
 

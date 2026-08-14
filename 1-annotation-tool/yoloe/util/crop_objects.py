@@ -20,6 +20,7 @@ from common import (
     draft_dir,
     ensure_dir,
     find_image_path,
+    list_image_stems,
     load_labelme,
     match_segs_to_boxes,
     normalize_images_dirname,
@@ -293,10 +294,12 @@ def crop_dataset(dataset_root, expand_ratio=1.5, draw_box=True, limit=None,
         if progress_cb:
             progress_cb(i, total, f"{i}/{total}")
 
-    stems_order = [Path(f).stem for f in files]
+    # 以图像为准：无图标签 / 缺图旧 draft 不写入 objects.jsonl 宇宙
+    img_stems = list_image_stems(img_dir)
+    stems_order = [Path(f).stem for f in files if Path(f).stem in img_stems]
     existing = {Path(p).stem for p in Path(obj_dir).glob("*.json")}
     for s in sorted(existing):
-        if s not in stems_order:
+        if s not in stems_order and s in img_stems:
             stems_order.append(s)
     n_obj = _rewrite_objects_jsonl(dataset_root, stems_order)
     write_draft_config(dataset_root, {

@@ -450,6 +450,23 @@ def find_image_path(img_dir, stem_or_name, image_path_hint=""):
     return None
 
 
+def list_image_stems(img_dir: str) -> set:
+    """图像目录下所有图片 stem（一次 scandir，供以图为准过滤标签）。"""
+    out = set()
+    if not img_dir or not os.path.isdir(img_dir):
+        return out
+    try:
+        with os.scandir(img_dir) as it:
+            for ent in it:
+                if not ent.is_file(follow_symlinks=False):
+                    continue
+                if Path(ent.name).suffix.lower() in IMG_EXTS:
+                    out.add(Path(ent.name).stem)
+    except OSError:
+        return set()
+    return out
+
+
 def match_segs_to_boxes(boxes_xyxy, segs):
     """
     Greedy IoU match: list of seg dicts {flat, xyxy} → list aligned to boxes (or None).

@@ -33,9 +33,99 @@ SYSTEM_PROMPT = (
     "The given class label is GROUND TRUTH: every phrase must stay in that class "
     "(never swap car↔motorcycle, etc.). "
     "Output JSON only: {\"phrases\":[...]} with short English noun phrases. "
-    "Vary axes (subtype, appearance, action/state, location, partial feature); "
-    "each phrase uses only 1–2 axes. No markdown, no thinking."
+    "Within ONE phrases list, diversify axes "
+    "(e.g. helmet / shirt / standing — different dimensions); "
+    "do NOT co-list near-paraphrases or synonyms "
+    "(person in red helmet ≈ person wearing red helmet; "
+    "helmet ≈ hard hat). "
+    "Do not re-offer synonyms of already-used phrases either "
+    "(if avoid has helmet, do not emit hard hat). "
+    "No markdown, no thinking."
 )
+
+# 近义过滤：去掉虚词后比较内容词（in/wearing/with 等不计）
+_PHRASE_STOPWORDS = frozenset({
+    "a", "an", "the", "in", "on", "at", "of", "with", "without",
+    "wearing", "wears", "worn", "holding", "holds", "and", "or",
+    "to", "for", "from", "by", "into", "onto", "over", "under",
+})
+
+# 同组内近义折叠（跨 caption 仍可用近义替换，故 avoid 不用 synonym key）
+_MULTIWORD_SYNONYMS = {
+    ("hard", "hat"): "helmet",
+    ("hard", "hats"): "helmet",
+    ("safety", "helmet"): "helmet",
+    ("safety", "hat"): "helmet",
+    ("safety", "hats"): "helmet",
+    ("t", "shirt"): "shirt",
+    ("tee", "shirt"): "shirt",
+    ("cell", "phone"): "phone",
+    ("mobile", "phone"): "phone",
+    ("smart", "phone"): "phone",
+}
+_TOKEN_SYNONYMS = {
+    "hardhat": "helmet",
+    "hardhats": "helmet",
+    "helmets": "helmet",
+    "shirts": "shirt",
+    "tshirt": "shirt",
+    "tshirts": "shirt",
+    "phones": "phone",
+    "cellphone": "phone",
+    "smartphone": "phone",
+}
+
+
+def _content_tokens(phrase: str):
+    toks = re.findall(r"[a-z0-9]+", (phrase or "").lower())
+    return [t for t in toks if t not in _PHRASE_STOPWORDS]
+
+
+def _canonicalize_tokens(tokens):
+    """hard hat → helmet 等；用于同组维度去重。"""
+    out = []
+    i = 0
+    n = len(tokens)
+    while i < n:
+        hit = False
+        for span in (3, 2):
+            if i + span <= n:
+                key = tuple(tokens[i:i + span])
+                canon = _MULTIWORD_SYNONYMS.get(key)
+                if canon:
+                    out.append(canon)
+                    i += span
+                    hit = True
+                    break
+        if hit:
+            continue
+        out.append(_TOKEN_SYNONYMS.get(tokens[i], tokens[i]))
+        i += 1
+    return out
+
+
+def phrase_content_key(phrase: str) -> str:
+    """person in red helmet / person wearing red helmet → 同一 key（虚词忽略）。"""
+    return " ".join(_content_tokens(phrase))
+
+
+def phrase_synonym_key(phrase: str) -> str:
+    """同组近义：red helmet ≈ red hard hat → 同一 key。"""
+    return " ".join(_canonicalize_tokens(_content_tokens(phrase)))
+
+
+def is_near_duplicate_phrase(phrase: str, ban_keys) -> bool:
+    key = phrase_content_key(phrase)
+    if not key:
+        return False
+    return key in (ban_keys or set())
+
+
+def is_synonym_duplicate_phrase(phrase: str, ban_syn_keys) -> bool:
+    key = phrase_synonym_key(phrase)
+    if not key:
+        return False
+    return key in (ban_syn_keys or set())
 
 
 def load_rules(scene: str = None) -> str:
@@ -85,7 +175,7 @@ def is_placeholder_desc(desc) -> bool:
 
 
 def describe_object(client: VLLMClient, crop_abs: str, label: str, rules: str = "",
-                    avoid_phrases=None, min_phrases=6, with_zh: bool = False,
+                    avoid_phrases=None, min_phrases=5, with_zh: bool = False,
                     max_retries: int = 3, seed_phrases=None):
     # 规则全文进 user prompt（与 caption 一致）；任务指令置后
     # with_zh=True：同一次视觉调用带回中文，避免刷新后再串行翻译
@@ -98,14 +188,18 @@ def describe_object(client: VLLMClient, crop_abs: str, label: str, rules: str = 
         str(p).strip() for p in (seed_phrases or [])
         if isinstance(p, str) and str(p).strip()
     ]
-    need = max(1, int(min_phrases or 6))
+    need = max(1, int(min_phrases or 5))
     retries = max(1, int(max_retries or 1))
     avoid_line = ""
     if avoid:
         listed = "; ".join(avoid[:16])
         avoid_line = (
-            f"Do NOT reuse or lightly paraphrase these already-used phrases: {listed}.\n"
-            f"Prefer clearly different attributes / viewpoints / wording.\n"
+            f"Do NOT reuse, lightly paraphrase, or synonym-swap these already-used phrases: {listed}.\n"
+            f"Counts as duplicate: preposition swap "
+            f"(person in red helmet ≈ person wearing red helmet) "
+            f"AND noun synonym (helmet ≈ hard hat).\n"
+            f"Emit DIFFERENT attribute axes instead "
+            f"(e.g. if helmet was used → prefer shirt / standing / location).\n"
         )
     seed_line = ""
     if seeds:
@@ -135,15 +229,21 @@ def describe_object(client: VLLMClient, crop_abs: str, label: str, rules: str = 
     cover_line = (
         f"Write up to {need} short English noun phrases that stay close to the seed phrases above; "
         f"still keep each phrase to 1–2 attribute axes only. "
+        f"Each new phrase must change an axis vs the seeds "
+        f"(not just in↔wearing / with↔holding / helmet↔hard hat). "
         f"Fewer is OK if the crop is limited — do not pad.\n"
         if seeds else
         f"Write up to {need} short English noun phrases (fewer is OK; do not pad). "
         f"Across the set, diversify these axes when visible: "
         f"(1) subtype/role (2) appearance/color (3) action/state "
-        f"(4) location (5) partial feature. "
+        f"(4) location (5) partial feature "
+        f"(good set: helmet / shirt / standing — different dimensions). "
         f"Each single phrase must combine only 1–2 axes "
         f"(e.g. red car; car on the road; car with sunroof); "
-        f"do NOT stack three or more modifiers in one phrase.\n"
+        f"do NOT stack three or more modifiers in one phrase. "
+        f"Do NOT list near-paraphrases or synonyms together "
+        f"(person in red helmet + person wearing red helmet; "
+        f"helmet + hard hat — forbidden).\n"
     )
     task = (
         f"Class label (GROUND TRUTH): {label}\n"
@@ -181,18 +281,30 @@ def describe_object(client: VLLMClient, crop_abs: str, label: str, rules: str = 
                 if isinstance(p, str) and p.strip()
             ]
             zh_raw = data.get("zh") or []
-            if avoid_l:
-                kept_zh = []
-                kept_ph = []
-                for i, p in enumerate(phrases):
-                    if p.lower() in avoid_l:
-                        continue
-                    kept_ph.append(p)
-                    if i < len(zh_raw) and isinstance(zh_raw[i], str) and zh_raw[i].strip():
-                        kept_zh.append(zh_raw[i].strip())
-                    else:
-                        kept_zh.append("")
-                phrases, zh_raw = kept_ph, kept_zh
+            # 他用 + 同组：虚词折叠与同义折叠都剔除（候选里直接不要重复）
+            ban_keys = {phrase_content_key(a) for a in avoid if phrase_content_key(a)}
+            ban_syn = {phrase_synonym_key(a) for a in avoid if phrase_synonym_key(a)}
+            kept_zh = []
+            kept_ph = []
+            for i, p in enumerate(phrases):
+                if p.lower() in avoid_l:
+                    continue
+                key = phrase_content_key(p)
+                if key and key in ban_keys:
+                    continue
+                syn = phrase_synonym_key(p)
+                if syn and syn in ban_syn:
+                    continue
+                if key:
+                    ban_keys.add(key)
+                if syn:
+                    ban_syn.add(syn)
+                kept_ph.append(p)
+                if i < len(zh_raw) and isinstance(zh_raw[i], str) and zh_raw[i].strip():
+                    kept_zh.append(zh_raw[i].strip())
+                else:
+                    kept_zh.append("")
+            phrases, zh_raw = kept_ph, kept_zh
             # 有多少用多少：不强制凑满 need；至少 1 条即可落盘
             if len(phrases) < 1:
                 raise ValueError(f"模型未返回有效短语: {data}")
@@ -217,7 +329,7 @@ def describe_object(client: VLLMClient, crop_abs: str, label: str, rules: str = 
 
 
 def describe_one_object(dataset_root, stem, obj_id, client: VLLMClient, rules: str = "",
-                        write: bool = True, avoid_phrases=None, min_phrases=6,
+                        write: bool = True, avoid_phrases=None, min_phrases=5,
                         with_zh: bool = False, max_retries: int = 3, seed_phrases=None):
     """生成单目标描述。write=False 时只返回结果，由调用方决定是否落盘（避免半成品覆盖）。"""
     obj_path = os.path.join(draft_dir(dataset_root), "objects", f"{stem}.json")

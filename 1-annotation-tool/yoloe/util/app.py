@@ -22,6 +22,7 @@ from common import (
     dir_has_images,
     dir_has_label_jsons,
     draft_dir,
+    list_image_stems,
     list_jsons_options,
     normalize_images_dirname,
     normalize_jsons_dirname,
@@ -33,7 +34,12 @@ from common import (
     write_draft_config,
     write_json,
 )
-from describe import describe_one_object, load_rules
+from describe import (
+    describe_one_object,
+    load_rules,
+    phrase_content_key,
+    phrase_synonym_key,
+)
 from export_gd import export_dataset, export_stem
 from generate import assess_draft, run_generate
 from rules_io import (
@@ -184,10 +190,28 @@ def _client():
 
 
 def list_stems():
-    obj_dir = os.path.join(draft_dir(_root()), "objects")
+    """审阅列表以图像文件为准：缺图的 objects 草稿不再列出。"""
+    root = _root()
+    if not root:
+        return []
+    obj_dir = os.path.join(draft_dir(root), "objects")
     if not os.path.isdir(obj_dir):
         return []
-    return sorted(Path(p).stem for p in Path(obj_dir).glob("*.json"))
+    img_dir = resolve_images_dir(root, state.get("images_dirname") or "images")
+    img_stems = list_image_stems(img_dir)
+    if not img_stems:
+        return []
+    stems = []
+    try:
+        with os.scandir(obj_dir) as it:
+            for ent in it:
+                if ent.is_file() and ent.name.endswith(".json"):
+                    stem = Path(ent.name).stem
+                    if stem in img_stems:
+                        stems.append(stem)
+    except OSError:
+        return []
+    return sorted(stems)
 
 
 def load_json(path, default=None):
@@ -758,6 +782,7 @@ def _run_generate_thread(root: str, assessment: dict, jsons_dirname: str,
             reassess = assess_draft(
                 root,
                 jsons_dirname=jsons_dirname,
+                images_dirname=images_dirname,
                 geometry=state.get("geometry") or None,
             )
             stages = [s for s in (reassess.get("stages") or []) if s != "crop"]
@@ -922,7 +947,8 @@ def generate_start():
     )
     # 打开/续跑：快速评估（不逐文件深扫）；重新生成仍 deep 精检
     assessment = assess_draft(
-        root, jsons_dirname=jsons_dirname, geometry=geom, deep=bool(force),
+        root, jsons_dirname=jsons_dirname, images_dirname=images_dirname,
+        geometry=geom, deep=bool(force),
     )
     if force:
         stages = list(assessment.get("stages") or [])
@@ -1115,7 +1141,9 @@ def ensure_zh_api(stem):
             mode=mode,
         )
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        # 翻译失败时仍返回当前 item，便于前端继续用英文；error 供状态栏展示
+        payload = _load_item_payload(stem) or payload
+        return jsonify({"ok": False, "error": str(e), **payload}), 500
     payload = _load_item_payload(stem)
     return jsonify({"ok": True, **payload})
 
@@ -1192,9 +1220,9 @@ def refresh_desc(stem, obj_id):
     """刷新单个目标描述；失败时不覆盖已有 draft。
 
     若 body 带 sentence_id：保留该 caption 已选用短语。
-    有保留时：最多 2 条围绕已选生成（更贴切），其余空位走多样化；合计最多 6 条。
-    无保留时：整组重刷，目标最多 6 条。
-    模型返回不足目标数时按实际条数更新，不强制凑满。
+    加速策略（v0.4.5）：只打 1 次视觉模型；先回英文，缺中文不阻塞翻译；
+    max_retries=1。前端再 ensure_zh 补中文。
+    合计最多 5 条；他用/近义不进入新候选；不足则按实有条数落盘。
     """
     if not _root():
         return jsonify({"error": "未配置数据集"}), 400
@@ -1220,7 +1248,7 @@ def refresh_desc(stem, obj_id):
             for ph in sents[sentence_id].get("phrases") or []:
                 if not isinstance(ph, dict) or ph.get("obj_id") != obj_id:
                     continue
-                # 「保留源标签」不是描述候选，刷新时不作为 keep/around 种子
+                # 「保留源标签」不是描述候选，刷新时不作为 keep 种子
                 if ph.get("keep_source_label"):
                     continue
                 p = (ph.get("phrase") or "").strip()
@@ -1236,8 +1264,7 @@ def refresh_desc(stem, obj_id):
                 if p and p not in avoid:
                     avoid.append(p)
 
-        DISPLAY_N = 6
-        AROUND_N = 2
+        DISPLAY_N = 5
         keep = keep[:DISPLAY_N]
         slots = max(0, DISPLAY_N - len(keep)) if keep else DISPLAY_N
         old_phrases = (old or {}).get("phrases") or []
@@ -1247,117 +1274,112 @@ def refresh_desc(stem, obj_id):
             if isinstance(p, str) and p.strip() and i < len(old_zh) and old_zh[i]:
                 old_zh_map[p.strip()] = old_zh[i]
 
-        def _attach_zh(phrases, model_zh=None):
-            """优先复用旧中文 / 模型同次返回；缺的再批量翻译（避免 N 次串行）。"""
-            model_zh = list(model_zh or [])
-            out = [""] * len(phrases)
-            miss_idx = []
-            miss_txt = []
-            for i, p in enumerate(phrases):
-                if p in old_zh_map:
-                    out[i] = old_zh_map[p]
-                elif i < len(model_zh) and isinstance(model_zh[i], str) and model_zh[i].strip():
-                    out[i] = model_zh[i].strip()
-                else:
-                    miss_idx.append(i)
-                    miss_txt.append(p)
-            if miss_txt:
-                filled = translate_batch(miss_txt)
-                for j, i in enumerate(miss_idx):
-                    out[i] = filled[j] if j < len(filled) else ""
-            return out
+        def _attach_zh_fast(phrases):
+            """只复用已有中文；缺的留空，由前端 ensure_zh 补（不阻塞刷新）。"""
+            return [old_zh_map.get(p, "") for p in phrases]
 
-        def _take_fresh(result, ban_l, n):
-            out_p, out_zh = [], []
+        def _take_fresh(result, ban_l, ban_keys, ban_syn, n):
+            """精确 / 虚词折叠 / 同义折叠均视为重复，直接不收录。"""
+            out_p = []
             if n <= 0:
-                return out_p, out_zh
-            zh_all = list(result.get("zh") or [])
-            for i, p in enumerate(result.get("phrases") or []):
+                return out_p
+            for p in result.get("phrases") or []:
                 if not isinstance(p, str) or not p.strip():
                     continue
                 if p.lower() in ban_l:
                     continue
+                key = phrase_content_key(p)
+                if key and key in ban_keys:
+                    continue
+                syn = phrase_synonym_key(p)
+                if syn and syn in ban_syn:
+                    continue
                 out_p.append(p)
-                out_zh.append(zh_all[i] if i < len(zh_all) and isinstance(zh_all[i], str) else "")
                 ban_l.add(p.lower())
+                if key:
+                    ban_keys.add(key)
+                if syn:
+                    ban_syn.add(syn)
                 if len(out_p) >= n:
                     break
-            return out_p, out_zh
+            return out_p
 
         if keep and slots == 0:
             r = dict(old or {})
             r["obj_id"] = obj_id
             r["stem"] = stem
             r["phrases"] = keep
-            r["zh"] = _attach_zh(keep)
+            r["zh"] = _attach_zh_fast(keep)
             r["label"] = (old or {}).get("label") or r.get("label") or ""
             write_json(desc_path, r)
             return jsonify({
                 "ok": True, "description": r, "kept": keep,
                 "refreshed": [], "around": [],
+                "zh_pending": any(not z for z in r["zh"]),
             })
 
         avoid_for_gen = list(dict.fromkeys(avoid + keep))
         rules = load_rules()
         client = _client()
         ban_l = {p.lower() for p in avoid_for_gen}
-        around, around_zh = [], []
-        rest, rest_zh = [], []
-        r = None
+        ban_keys = {phrase_content_key(p) for p in avoid_for_gen if phrase_content_key(p)}
+        ban_syn = {phrase_synonym_key(p) for p in avoid_for_gen if phrase_synonym_key(p)}
+
+        # 单次视觉调用：有已选则带 seed；只生成英文以缩短耗时
+        need = slots if keep else DISPLAY_N
+        r = describe_one_object(
+            _root(), stem, obj_id, client, rules,
+            write=False, avoid_phrases=avoid_for_gen, min_phrases=need,
+            with_zh=False, max_retries=1,
+            seed_phrases=keep if keep else None,
+        )
+        fresh = _take_fresh(r, ban_l, ban_keys, ban_syn, need)
+        if len(fresh) < 1:
+            raise ValueError("模型未返回可替换的新短语")
 
         if keep:
-            n_around = min(AROUND_N, slots)
-            n_rest = max(0, slots - n_around)
-            if n_around > 0:
-                r = describe_one_object(
-                    _root(), stem, obj_id, client, rules,
-                    write=False, avoid_phrases=avoid_for_gen, min_phrases=n_around,
-                    with_zh=True, max_retries=2, seed_phrases=keep,
-                )
-                around, around_zh = _take_fresh(r, ban_l, n_around)
-                # 围绕生成不足时，把空位并入原多样化逻辑
-                n_rest = max(0, slots - len(around))
-            if n_rest > 0:
-                avoid_rest = list(dict.fromkeys(avoid_for_gen + around))
-                r = describe_one_object(
-                    _root(), stem, obj_id, client, rules,
-                    write=False, avoid_phrases=avoid_rest, min_phrases=n_rest,
-                    with_zh=True, max_retries=2,
-                )
-                rest, rest_zh = _take_fresh(r, ban_l, n_rest)
-            fresh = around + rest
-            if len(fresh) < 1:
-                raise ValueError("模型未返回可替换的新短语")
-            phrases = (keep + fresh)[:DISPLAY_N]
-            model_zh_aligned = ([""] * len(keep) + around_zh + rest_zh)[:len(phrases)]
+            keep_l = {p.lower() for p in keep}
+            phrases = []
+            fi = 0
+            for p in old_phrases:
+                if not isinstance(p, str) or not p.strip():
+                    continue
+                pl = p.strip().lower()
+                if pl in keep_l:
+                    phrases.append(p.strip())
+                elif fi < len(fresh):
+                    phrases.append(fresh[fi])
+                    fi += 1
+            seen_l = {p.lower() for p in phrases}
+            for p in keep:
+                if p.lower() not in seen_l:
+                    phrases.append(p)
+                    seen_l.add(p.lower())
+            while fi < len(fresh) and len(phrases) < DISPLAY_N:
+                if fresh[fi].lower() not in seen_l:
+                    phrases.append(fresh[fi])
+                    seen_l.add(fresh[fi].lower())
+                fi += 1
+            phrases = phrases[:DISPLAY_N]
         else:
-            r = describe_one_object(
-                _root(), stem, obj_id, client, rules,
-                write=False, avoid_phrases=avoid_for_gen, min_phrases=DISPLAY_N,
-                with_zh=True, max_retries=2,
-            )
-            rest, rest_zh = _take_fresh(r, ban_l, DISPLAY_N)
-            phrases = rest[:DISPLAY_N]
-            model_zh_aligned = rest_zh[:len(phrases)]
-            fresh = phrases
+            phrases = fresh[:DISPLAY_N]
 
         if len(phrases) < 1:
             raise ValueError("模型未返回有效短语")
 
-        if r is None:
-            r = dict(old or {})
-            r["obj_id"] = obj_id
-            r["stem"] = stem
+        r["obj_id"] = obj_id
+        r["stem"] = stem
         r["phrases"] = phrases
-        r["zh"] = _attach_zh(phrases, model_zh_aligned)
+        r["zh"] = _attach_zh_fast(phrases)
         r["label"] = (old or {}).get("label") or r.get("label") or ""
         write_json(desc_path, r)
         return jsonify({
             "ok": True,
             "description": r,
             "kept": keep,
-            "around": around,
-            "refreshed": fresh if keep else phrases,
+            "around": [],
+            "refreshed": fresh,
+            "zh_pending": any(not z for z in r["zh"]),
         })
     except Exception as e:
         return jsonify({"error": str(e), "description": old}), 500
@@ -1405,6 +1427,21 @@ def delete_caption(stem, sentence_id):
     old["captions"] = caps
     write_json(path, old)
     return jsonify({"ok": True, "captions": old})
+
+
+@app.route("/api/delete_all_captions/<stem>", methods=["POST"])
+def delete_all_captions(stem):
+    """一键清空当前图全部 caption（不合适条目批量删除）。"""
+    if not _root():
+        return jsonify({"error": "未配置数据集"}), 400
+    path = os.path.join(draft_dir(_root()), "captions", f"{stem}.json")
+    old = load_json(path)
+    if not old:
+        return jsonify({"error": "无 caption draft"}), 404
+    n_before = len(old.get("captions") or [])
+    old["captions"] = []
+    write_json(path, old)
+    return jsonify({"ok": True, "captions": old, "deleted": n_before})
 
 
 @app.route("/api/add_caption/<stem>", methods=["POST"])
