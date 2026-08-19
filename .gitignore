@@ -30,3 +30,4 @@ runs/
 *.swp
 .idea/
 .vscode/
+.cursor/
