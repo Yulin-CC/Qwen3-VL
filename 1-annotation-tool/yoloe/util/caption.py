@@ -539,6 +539,11 @@ def regenerate_single_caption(dataset_root, stem, sentence_id, client=None, seed
             row = {"obj_id": oid, "phrase": phrase, "tokens_positive": None}
             if ph.get("keep_source_label"):
                 row["keep_source_label"] = True
+            feats = [
+                str(f).strip() for f in (ph.get("features") or []) if str(f).strip()
+            ][:2]
+            if feats:
+                row["features"] = feats
             cleaned.append(row)
         sent["phrases"] = cleaned
     objects = meta["objects"]

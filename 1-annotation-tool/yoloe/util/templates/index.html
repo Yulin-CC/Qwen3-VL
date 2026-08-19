@@ -869,7 +869,7 @@ function pushPhraseOntoCaption(cap, oidN, ph){
   syncPhraseTokens(cap);
 }
 
-/** 新填入：优先当前条空位，再其它空位；都满了则追加到当前条。不挪已有填空 */
+/** 新填入：优先空位；仅当所有可填格都已有特征时才追加为「额外」。有空位时绝不往已填格叠 */
 function placePhraseOnObjCaptions(oid, phrase){
   const oidN = normObjId(oid);
   const ph = normPhrase(phrase);
@@ -878,13 +878,108 @@ function placePhraseOnObjCaptions(oid, phrase){
   const caps = item.captions.captions || [];
   let ci = firstEmptyAppearance(oidN);
   if (ci == null){
+    // 可填格已满：追加到当前条 / 任一可填格（显式允许多于 need）
     if (captionAcceptsObjPhrase(caps[activeCap], oidN) && objAppearanceIdxs(oidN).includes(activeCap))
       ci = activeCap;
     else
       ci = objAppearanceIdxs(oidN).find(i => captionAcceptsObjPhrase(caps[i], oidN));
   }
   if (ci == null) return;
+  // 双保险：若仍有空位，不允许写到已有特征的格
+  const destFeats = capFeaturesForObj(caps[ci], oidN);
+  if (destFeats.length && firstEmptyAppearance(oidN) != null){
+    ci = firstEmptyAppearance(oidN);
+  }
+  if (ci == null) return;
   pushPhraseOntoCaption(caps[ci], oidN, ph);
+}
+
+/**
+ * 纠正「chosen 有、槽却空 / 一格叠多条」：
+ * 多出来的特征挪到空位；仍空着的用未落位 chosen 补上。
+ */
+function repairObjSlotPlacement(oid){
+  const oidN = normObjId(oid);
+  if (oidN == null || !item) return false;
+  const caps = item.captions.captions || [];
+  const idxs = objAppearanceIdxs(oidN);
+  if (!idxs.length) return false;
+  let changed = false;
+  const empties = () => idxs.filter(ci => {
+    const cap = caps[ci];
+    return captionAcceptsObjPhrase(cap, oidN) && !capFeaturesForObj(cap, oidN).length;
+  });
+
+  // 一格多特征 → 挪到空位
+  idxs.forEach(ci => {
+    const cap = caps[ci];
+    if (!cap || objHasKeepSourceLabel(cap, oidN)) return;
+    const feats = capFeaturesForObj(cap, oidN);
+    if (feats.length <= 1) return;
+    feats.slice(1).forEach(ph => {
+      if (!empties().length) return;
+      removePhraseFromObjCaptions(oidN, ph);
+      const dest = firstEmptyAppearance(oidN);
+      if (dest == null){
+        // 挪走后无处可放则加回原逻辑的追加
+        placePhraseOnObjCaptions(oidN, ph);
+      } else {
+        pushPhraseOntoCaption(caps[dest], oidN, ph);
+      }
+      changed = true;
+    });
+  });
+
+  // chosen 未落位 → 填空
+  getChosen(oidN).forEach(ph => {
+    if (objPhraseAlreadyOnCaptions(oidN, ph)) return;
+    if (!empties().length) return;
+    placePhraseOnObjCaptions(oidN, ph);
+    changed = true;
+  });
+  return changed;
+}
+
+function repairAllSlotPlacements(){
+  if (!item) return false;
+  let changed = false;
+  allCaptionObjIds().forEach(oid => {
+    if (repairObjSlotPlacement(oid)) changed = true;
+  });
+  return changed;
+}
+
+/** 用当前 item 刷新某 stem 的 caption 刷新快照（切图前调用，避免后台用旧落位盖盘） */
+function refreshCaptionSnapsFromItem(stem, it){
+  if (!stem || !it) return;
+  const st = ensureCapRefreshStem(stem);
+  const caps = (it.captions && it.captions.captions) || [];
+  caps.forEach((cap, i) => {
+    st.snap[i] = snapshotCaptionForRefresh(cap);
+  });
+}
+
+/** 切图保存后：刷新快照并重排后台 caption 刷新，避免旧请求盖掉最新落位 */
+function resyncCaptionRefreshAfterSave(stem, it){
+  if (!stem || !it) return;
+  const st = ensureCapRefreshStem(stem);
+  const need = st.running || !!st.timer || st.pending.size > 0;
+  refreshCaptionSnapsFromItem(stem, it);
+  if (!need) return;
+  const caps = (it.captions && it.captions.captions) || [];
+  const kick = [];
+  caps.forEach((cap, i) => {
+    if (captionHasSelectedPhrases(cap)) kick.push(i);
+  });
+  if (kick.length) requeueCaptionRefresh(stem, kick);
+  else {
+    st.token++;
+    st.pending.clear();
+    if (st.timer){
+      clearTimeout(st.timer);
+      st.timer = null;
+    }
+  }
 }
 
 /** 只从各 caption 拿掉这一条特征；同一格上的其它描述不动。正文留给刷新重写 */
@@ -977,6 +1072,67 @@ function setKeepSourceLabelOnCaption(oid, capIdx){
   if (!(cap.caption || '').trim())
     cap.caption = appendPhraseToCaption('', labelPh);
   rehomeUnplacedChosen(oidN);
+  syncCaptionObjIdsFromPhrases(cap);
+  syncPhraseTokens(cap);
+}
+
+/** 上一张该目标按出现顺序的填空计划：keep 或首条特征（用于匹配拷贝） */
+function matchFillPlanFromPrev(prevOid){
+  const oidN = normObjId(prevOid);
+  if (oidN == null || !prevItem) return [];
+  const prevCaps = (prevItem.captions && prevItem.captions.captions) || [];
+  const prevIdxs = appearanceIdxsIn(prevItem, oidN);
+  const plan = [];
+  const seenFeat = new Set();
+  prevIdxs.forEach(ci => {
+    const cap = prevCaps[ci];
+    if (!cap) return;
+    if (objHasKeepSourceLabel(cap, oidN)){
+      plan.push({keep: true});
+      return;
+    }
+    const feats = capFeaturesForObj(cap, oidN);
+    const ph = feats[0] ? normPhrase(feats[0]) : '';
+    if (!ph) return;
+    seenFeat.add(ph.toLowerCase());
+    plan.push({keep: false, ph});
+  });
+  // 槽上没有落位时，退回 chosen 顺序
+  if (!plan.length){
+    const src = (prevItem.descriptions && prevItem.descriptions[String(oidN)]) || {};
+    (src.chosen || []).forEach(raw => {
+      const ph = normPhrase(raw);
+      if (!ph || seenFeat.has(ph.toLowerCase())) return;
+      seenFeat.add(ph.toLowerCase());
+      plan.push({keep: false, ph});
+    });
+  }
+  return plan;
+}
+
+/** 静默把该目标在指定 caption 改成源标签（不 render / 不刷新句；匹配拷贝用，不 rehome） */
+function setKeepSourceLabelOnCaptionQuiet(oid, capIdx){
+  const caps = (item && item.captions && item.captions.captions) || [];
+  const cap = caps[capIdx];
+  const oidN = normObjId(oid);
+  const obj = ((item && item.meta && item.meta.objects) || [])
+    .find(o => normObjId(o.obj_id) === oidN);
+  if (!cap || oidN == null || !obj) return;
+  const labelPh = sourceLabelPhraseForObj(obj);
+  removeObjPhrasesFromCaption(cap, oidN, () => true);
+  cap.obj_ids = cap.obj_ids || [];
+  if (!cap.obj_ids.map(normObjId).includes(oidN)) cap.obj_ids.push(oidN);
+  cap.phrases = cap.phrases || [];
+  if (!objHasKeepSourceLabel(cap, oidN)){
+    cap.phrases.push({
+      obj_id: oidN,
+      phrase: labelPh,
+      tokens_positive: null,
+      keep_source_label: true,
+    });
+  }
+  if (!(cap.caption || '').trim())
+    cap.caption = appendPhraseToCaption('', labelPh);
   syncCaptionObjIdsFromPhrases(cap);
   syncPhraseTokens(cap);
 }
@@ -2246,16 +2402,41 @@ function mergeCaptionsKeepSelection(serverCaps){
   });
 }
 
-let captionRefreshTimer = null;
-let captionRefreshToken = 0;
-let pendingCaptionSids = new Set();
+/**
+ * caption 自动刷新：按 stem 隔离。
+ * 切图不取消；防抖/请求带着原 stem 快照，结果写回原图（仍停在该图才改 UI）。
+ * Map: stem -> { token, pending, timer, snap, running }
+ */
+const captionRefreshByStem = new Map();
 
-function invalidateCaptionRefresh(){
-  captionRefreshToken++;
-  pendingCaptionSids.clear();
-  if (captionRefreshTimer){
-    clearTimeout(captionRefreshTimer);
-    captionRefreshTimer = null;
+function ensureCapRefreshStem(stem){
+  let st = captionRefreshByStem.get(stem);
+  if (!st){
+    st = { token: 0, pending: new Set(), timer: null, snap: {}, running: false };
+    captionRefreshByStem.set(stem, st);
+  }
+  return st;
+}
+
+function snapshotCaptionForRefresh(cap){
+  return {
+    phrases: phrasesPayloadForRefresh(cap),
+    fp: selectedPhraseFingerprint(cap),
+  };
+}
+
+/** 仅在需要主动作废某张图队列时用（切图不要调） */
+function invalidateCaptionRefresh(stem){
+  const key = stem || curStem;
+  if (!key) return;
+  const st = captionRefreshByStem.get(key);
+  if (!st) return;
+  st.token++;
+  st.pending.clear();
+  st.snap = {};
+  if (st.timer){
+    clearTimeout(st.timer);
+    st.timer = null;
   }
 }
 
@@ -2267,115 +2448,165 @@ function scheduleObjCaptionRefresh(oid){
   scheduleCaptionRefresh(objAppearanceIdxs(oid));
 }
 
-/** 防抖后按序号逐条 LLM 重写；切 caption 不取消，切图才作废 */
-function scheduleCaptionRefresh(sids){
-  const caps = (item && item.captions && item.captions.captions) || [];
+/** 防抖后按序号逐条 LLM 重写；切图不取消，按 stem 后台写回 */
+function scheduleCaptionRefresh(sids, stemOpt){
+  const stem = stemOpt || curStem;
+  if (!stem) return;
+  const st = ensureCapRefreshStem(stem);
+  const live = (curStem === stem && item);
+  const caps = live ? ((item.captions && item.captions.captions) || []) : null;
   (sids || []).forEach(i => {
     const n = Number(i);
-    if (Number.isInteger(n) && n >= 0 && n < caps.length) pendingCaptionSids.add(n);
+    if (!Number.isInteger(n) || n < 0) return;
+    if (caps){
+      if (n >= caps.length) return;
+      st.pending.add(n);
+      st.snap[n] = snapshotCaptionForRefresh(caps[n]);
+    } else if (st.snap[n]){
+      st.pending.add(n);
+    }
   });
-  if (!pendingCaptionSids.size) return;
-  const token = ++captionRefreshToken;
-  if (captionRefreshTimer) clearTimeout(captionRefreshTimer);
-  captionRefreshTimer = setTimeout(() => {
-    captionRefreshTimer = null;
-    const ids = [...pendingCaptionSids].sort((a, b) => a - b);
-    pendingCaptionSids.clear();
-    runCaptionRefreshQueue(ids, token);
+  if (!st.pending.size) return;
+  const token = ++st.token;
+  if (st.timer) clearTimeout(st.timer);
+  st.timer = setTimeout(() => {
+    st.timer = null;
+    const ids = [...st.pending].sort((a, b) => a - b);
+    st.pending.clear();
+    runCaptionRefreshQueue(ids, token, stem);
   }, 220);
 }
 
-async function runCaptionRefreshQueue(ids, token){
-  if (!curStem || !item || !ids.length) return;
-  const caps0 = item.captions.captions || [];
-  ids.forEach(sid => {
-    const cap = caps0[sid];
-    if (cap && syncActiveCaptionPhrasesToRight(cap)) markDirty();
+function requeueCaptionRefresh(stem, sids){
+  const st = ensureCapRefreshStem(stem);
+  (sids || []).forEach(n => {
+    if (Number.isInteger(n) && n >= 0) st.pending.add(n);
   });
-  markDirty();
-  renderAll();
+  if (!st.pending.size) return;
+  const token = ++st.token;
+  if (st.timer) clearTimeout(st.timer);
+  st.timer = setTimeout(() => {
+    st.timer = null;
+    const ids = [...st.pending].sort((a, b) => a - b);
+    st.pending.clear();
+    runCaptionRefreshQueue(ids, token, stem);
+  }, 220);
+}
 
-  const ok = await persistItem();
-  if (!ok || token !== captionRefreshToken) return;
+async function runCaptionRefreshQueue(ids, token, stem){
+  if (!stem || !ids.length) return;
+  const st = ensureCapRefreshStem(stem);
+  if (token !== st.token) return;
+  const stillHere = () => curStem === stem && item;
 
-  const multi = ids.length > 1;
-  setCaptionRefreshBusy(true, '刷新中…', multi ? 'all' : 'one');
-  let lastErr = null;
-  let nDone = 0;
+  st.running = true;
   try {
+    if (stillHere()){
+      const caps0 = item.captions.captions || [];
+      ids.forEach(sid => {
+        const cap = caps0[sid];
+        if (cap && syncActiveCaptionPhrasesToRight(cap)) markDirty();
+      });
+      markDirty();
+      renderAll();
+      const ok = await persistItem();
+      if (!ok || token !== st.token) return;
+      ids.forEach(sid => {
+        const cap = (item.captions.captions || [])[sid];
+        if (cap) st.snap[sid] = snapshotCaptionForRefresh(cap);
+      });
+    }
+
+    const multi = ids.length > 1;
+    if (stillHere()) setCaptionRefreshBusy(true, '刷新中…', multi ? 'all' : 'one');
+    let lastErr = null;
+    let nDone = 0;
     for (let k = 0; k < ids.length; k++){
       const sid = ids[k];
-      if (token !== captionRefreshToken){
-        ids.slice(k).forEach(j => pendingCaptionSids.add(j));
-        return;
-      }
-      const cap = (item.captions.captions || [])[sid];
-      if (!cap) continue;
-      if (!(cap.phrases && cap.phrases.length)){
-        if ((cap.caption || '').trim()){
-          clearCaptionText(cap);
-          markDirty();
-          await persistItem();
+      if (token !== st.token) return; // 同 stem 有更新调度，交给新队列
+      let phrasesBody;
+      let phraseFp;
+      if (stillHere()){
+        const cap = (item.captions.captions || [])[sid];
+        if (!cap) continue;
+        if (!(cap.phrases && cap.phrases.length)){
+          if ((cap.caption || '').trim()){
+            clearCaptionText(cap);
+            markDirty();
+            await persistItem();
+          }
+          if (token !== st.token) return;
+          if (stillHere()) renderAll();
+          continue;
         }
-        if (token !== captionRefreshToken){
-          ids.slice(k).forEach(j => pendingCaptionSids.add(j));
-          return;
-        }
-        renderAll();
-        continue;
+        phraseFp = selectedPhraseFingerprint(cap);
+        phrasesBody = phrasesPayloadForRefresh(cap);
+        st.snap[sid] = { phrases: phrasesBody, fp: phraseFp };
+      } else {
+        const snap = st.snap[sid];
+        if (!snap || !(snap.phrases && snap.phrases.length)) continue;
+        phrasesBody = snap.phrases;
+        phraseFp = snap.fp;
       }
-      const phraseFp = selectedPhraseFingerprint(cap);
-      const phrasesBody = phrasesPayloadForRefresh(cap);
-      setStatus(`正在生成 captions${sid + 1}…`);
+      if (stillHere()) setStatus(`正在生成 captions${sid + 1}…`);
       const res = await api(
-        `/api/refresh_caption/${encodeURIComponent(curStem)}/${sid}`,
+        `/api/refresh_caption/${encodeURIComponent(stem)}/${sid}`,
         {
           method:'POST',
           headers:{'Content-Type':'application/json'},
           body: JSON.stringify({phrases: phrasesBody}),
         }
       );
-      if (token !== captionRefreshToken){
-        ids.slice(k).forEach(j => pendingCaptionSids.add(j));
-        return;
-      }
-      const cur = (item.captions.captions || [])[sid];
-      if (!cur || selectedPhraseFingerprint(cur) !== phraseFp){
-        ids.slice(k).forEach(j => pendingCaptionSids.add(j));
-        scheduleCaptionRefresh([]);
-        return;
+      if (token !== st.token) return;
+      if (stillHere()){
+        const cur = (item.captions.captions || [])[sid];
+        if (!cur || selectedPhraseFingerprint(cur) !== phraseFp){
+          // 选用又变了：把本条及后续重新排队
+          requeueCaptionRefresh(stem, ids.slice(k));
+          return;
+        }
       }
       if (res.error){
         lastErr = res.error;
         continue;
       }
-      mergeCaptionsKeepSelection(res.captions);
-      const after = (item.captions.captions || [])[sid];
-      if (after && syncActiveCaptionPhrasesToRight(after)){
-        markDirty();
-        await persistItem();
-      } else if (token === captionRefreshToken){
-        dirty = false;
+      if (stillHere()){
+        mergeCaptionsKeepSelection(res.captions);
+        const after = (item.captions.captions || [])[sid];
+        if (after && syncActiveCaptionPhrasesToRight(after)){
+          markDirty();
+          await persistItem();
+        } else if (token === st.token){
+          dirty = false;
+        }
+        if (after) st.snap[sid] = snapshotCaptionForRefresh(after);
+        nDone += 1;
+        if (token !== st.token) return;
+        renderAll();
+      } else {
+        nDone += 1;
       }
-      nDone += 1;
-      if (token !== captionRefreshToken){
-        ids.slice(k + 1).forEach(j => pendingCaptionSids.add(j));
-        return;
-      }
-      renderAll();
     }
-    if (token !== captionRefreshToken) return;
-    ensureZhAsync(curStem);
-    if (lastErr){
-      setStatus(nDone ? `caption 已刷新 ${nDone} 条，有失败: ${lastErr}` : 'caption 刷新失败');
-    } else {
-      setStatus(multi ? `已自动刷新 ${nDone} 条 caption` : (nDone ? `captions${ids[0] + 1} 已刷新` : 'caption 已更新'));
+    if (token !== st.token) return;
+    if (stillHere()){
+      ensureZhAsync(stem);
+      if (lastErr){
+        setStatus(nDone ? `caption 已刷新 ${nDone} 条，有失败: ${lastErr}` : 'caption 刷新失败');
+      } else {
+        setStatus(multi ? `已自动刷新 ${nDone} 条 caption` : (nDone ? `captions${ids[0] + 1} 已刷新` : 'caption 已更新'));
+      }
+    } else if (nDone){
+      api('/api/ensure_zh/' + encodeURIComponent(stem), {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({mode: 'captions'}),
+      }).catch(() => null);
     }
   } finally {
-    if (!captionRefreshTimer) setCaptionRefreshBusy(false);
+    st.running = false;
+    if (!st.timer) setCaptionRefreshBusy(false);
   }
 }
-
 async function toggleKeepSourceLabelAt(oid, capIdx){
   if (!item) return;
   const caps = item.captions.captions || [];
@@ -2550,7 +2781,11 @@ function neighborStem(delta){
 
 function captionRefreshBusyNow(){
   const sheet = document.getElementById('cap-sheet');
-  return !!captionRefreshTimer || !!(sheet && sheet.classList.contains('refreshing'));
+  if (sheet && sheet.classList.contains('refreshing')) return true;
+  for (const st of captionRefreshByStem.values()){
+    if (st.timer || st.running) return true;
+  }
+  return false;
 }
 
 /** 停留当前图时，后台补下一张 caption/描述中文，切图少等翻译 */
@@ -2648,12 +2883,14 @@ async function loadStem(stem){
       return;
     }
     if (curStem && item && !confirmLeaveIfSlotsPending()) return;
-    // 描述刷新后台继续（结果写回原 stem）；caption 防抖队列仍随切图作废
+    // 描述 / caption 刷新均后台继续；切图前刷新快照并重排，避免旧落位盖盘
+    const leavingStem = curStem;
+    const leavingItem = item;
+    if (leavingStem && leavingItem) repairAllSlotPlacements();
     const ok = await saveIfDirty();
     if (!ok) return;
-    invalidateCaptionRefresh();
+    if (leavingStem && leavingItem) resyncCaptionRefreshAfterSave(leavingStem, leavingItem);
   }
-  invalidateCaptionRefresh();
   if (prefetchZhTimer){
     clearTimeout(prefetchZhTimer);
     prefetchZhTimer = null;
@@ -2670,6 +2907,10 @@ async function loadStem(stem){
   item = await api('/api/item/' + encodeURIComponent(stem));
   if (item.error){ alert(item.error); return; }
   inferChosenFromCaptions();
+  if (repairAllSlotPlacements()){
+    markDirty();
+    await persistItem();
+  }
   activeCap = 0;
   // 保留左上角「全图 / 跟目标」；仅退出手动平移缩放，按当前模式适配新图
   viewManual = false;
@@ -3682,17 +3923,35 @@ function applyMatchDescriptions(prevOid, currOid){
   const currObj = (item.meta.objects || []).find(o => normObjId(o.obj_id) === currOid);
   const dstKey = String(currOid);
   const dst = item.descriptions[dstKey] || {phrases: [], zh: [], label: ''};
+  // 候选池仍拷全量，方便槽不够时校验员从选项补
   const phrases = (src.phrases || []).map(normPhrase).filter(Boolean);
   let zh = Array.isArray(src.zh) ? src.zh.slice() : [];
   while (zh.length < phrases.length) zh.push('');
-  const chosen = (src.chosen || []).map(normPhrase).filter(Boolean);
   const have = new Set(phrases.map(p => p.toLowerCase()));
-  chosen.forEach(ph => {
+  (src.chosen || []).forEach(ph0 => {
+    const ph = normPhrase(ph0);
     if (!ph || have.has(ph.toLowerCase())) return;
     phrases.push(ph);
     zh.push('');
     have.add(ph.toLowerCase());
   });
+
+  const currIdxs = objAppearanceIdxs(currOid);
+  const nSlots = currIdxs.length;
+  // 槽不够：按上一张出现顺序只取前 n 个；槽更多：有多少填多少，剩空给校验员
+  const plan = matchFillPlanFromPrev(prevOid).slice(0, nSlots);
+  const chosen = [];
+  plan.forEach(p => {
+    if (p.keep || !p.ph) return;
+    if (chosen.some(x => x.toLowerCase() === p.ph.toLowerCase())) return;
+    chosen.push(p.ph);
+    if (!have.has(p.ph.toLowerCase())){
+      phrases.push(p.ph);
+      zh.push('');
+      have.add(p.ph.toLowerCase());
+    }
+  });
+
   item.descriptions[dstKey] = Object.assign({}, dst, {
     obj_id: currOid,
     stem: curStem,
@@ -3701,8 +3960,23 @@ function applyMatchDescriptions(prevOid, currOid){
     zh: zh.slice(0, phrases.length),
     chosen,
   });
-  replaceObjPhrasesFromChosen(currOid);
-  copyKeepSourceSlotsFromPrev(prevOid, currOid);
+
+  // 按当前槽位逐格写入，不把上一张多余描述叠成「额外」
+  const caps = (item.captions && item.captions.captions) || [];
+  caps.forEach((cap, i) => {
+    removeObjPhrasesFromCaption(cap, currOid, () => true);
+    if (currIdxs.includes(i)){
+      cap.obj_ids = cap.obj_ids || [];
+      if (!cap.obj_ids.map(normObjId).includes(currOid)) cap.obj_ids.push(currOid);
+    }
+    syncCaptionObjIdsFromPhrases(cap);
+  });
+  plan.forEach((p, j) => {
+    const ci = currIdxs[j];
+    if (ci == null) return;
+    if (p.keep) setKeepSourceLabelOnCaptionQuiet(currOid, ci);
+    else if (p.ph) pushPhraseOntoCaption(caps[ci], currOid, p.ph);
+  });
 }
 
 function confirmMatchPair(){
@@ -4257,11 +4531,6 @@ async function probeModelServices(){
 async function onModelSvcChange(nextId){
   const next = nextId || modelServiceId;
   if (!next) return;
-  if (next === modelServiceId){
-    // 仍允许复检，但不必重复 select
-    const s0 = modelServices.find(x => x.id === next);
-    if (s0 && s0.ok != null){ syncModelSvcDotFromCache(); return; }
-  }
   setModelSvcDot('checking', '切换服务…');
   const res = await api('/api/model_services/select', {
     method:'POST', headers:{'Content-Type':'application/json'},
@@ -4312,6 +4581,14 @@ async function onRulesSceneChange(){
   nativeFolderPicker = !!cfg.native_folder_picker;
   fillRulesSceneSelect(cfg.rules_scenes, cfg.rules_scene || '');
   fillModelSvcSelect(cfg.model_services || [], cfg.service_id || '');
+  const chosen = modelServices.find(s => s.id === modelServiceId);
+  if (chosen && (
+    cfg.service_id !== modelServiceId ||
+    (cfg.base_url || '') !== (chosen.base_url || '') ||
+    (cfg.model || '') !== (chosen.model || '')
+  )){
+    await onModelSvcChange(modelServiceId);
+  }
   probeModelServices();
   scheduleModelSvcProbe();
   if (cfg.images_dirname || cfg.jsons_dirname){

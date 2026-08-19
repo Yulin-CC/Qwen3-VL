@@ -19,8 +19,8 @@ REM NOTE: keep this .bat ASCII-only. UTF-8 Chinese breaks cmd.exe on CN Windows.
 cd /d "%~dp0"
 
 REM ---- editable ----
-set "VLLM_BASE_URL=http://113.31.108.24:8081/v1"
-set "VLLM_MODEL=qwen3.6-35b-a3b"
+set "VLLM_BASE_URL=http://192.168.106.202:4004/v1"
+set "VLLM_MODEL=/Qwen3.8-27B-FP8"
 set "DATASET="
 set "PORT=8090"
 set "PY_DEV=C:\Users\15959\.conda\envs\yulin\python.exe"

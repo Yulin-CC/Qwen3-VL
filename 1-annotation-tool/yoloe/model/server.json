@@ -6,15 +6,23 @@
       "base_url": "http://113.31.108.24:8081/v1",
       "port": 8081,
       "model": "qwen3.6-35b-a3b",
-      "default": true
+      "default": false
     },
     {
       "id": "1",
-      "name": "test",
-      "base_url": "http://113.31.108.25:8081/v1",
+      "name": "Qwen3.8-27B",
+      "base_url": "http://113.31.108.24:8081/v1",
       "port": 8081,
-      "model": "test",
+      "model": "qwen3.8-27b",
       "default": false
+    },
+    {
+      "id": "2",
+      "name": "Qwen3.8-27B-FP8",
+      "base_url": "http://192.168.106.202:4004/v1",
+      "port": 4004,
+      "model": "/Qwen3.8-27B-FP8",
+      "default": true
     }
   ]
 }

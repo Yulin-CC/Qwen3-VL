@@ -631,15 +631,16 @@ def config_api():
         state["images_dirname"] = normalize_images_dirname(data["images_dirname"])
     if data.get("geometry"):
         state["geometry"] = data["geometry"]
+    if data.get("base_url"):
+        state["base_url"] = str(data["base_url"]).rstrip("/")
+    if data.get("model"):
+        state["model"] = data["model"]
+    # service_id 后写，避免页面里残留的旧 base_url/model 把已选服务覆盖掉
     if data.get("service_id"):
         svc = get_service(str(data["service_id"]))
         if not svc:
             return jsonify({"error": f"未知模型服务: {data['service_id']}"}), 400
         _apply_service(svc)
-    if data.get("base_url"):
-        state["base_url"] = str(data["base_url"]).rstrip("/")
-    if data.get("model"):
-        state["model"] = data["model"]
     if "rules_scene" in data:
         sc = set_rules_scene(data.get("rules_scene"))
         state["rules_scene"] = sc
