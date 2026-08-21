@@ -14,7 +14,7 @@
       "base_url": "http://113.31.108.24:8081/v1",
       "port": 8081,
       "model": "qwen3.8-27b",
-      "default": false
+      "default": true
     },
     {
       "id": "2",
@@ -22,7 +22,7 @@
       "base_url": "http://192.168.106.202:4004/v1",
       "port": 4004,
       "model": "/Qwen3.8-27B-FP8",
-      "default": true
+      "default": false
     }
   ]
 }
