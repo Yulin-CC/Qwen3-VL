@@ -1,0 +1,8 @@
+# Python junk
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local drafts / datasets (never ship)
+.draft/
+*.draft/

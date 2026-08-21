@@ -13,7 +13,7 @@ Qwen3-VL/
 │   └── 1-inference.sh
 ├── 1-annotation-tool/            # 标注工具
 │   ├── qwen/                     # 图像问答对标注（Flask）
-│   └── yoloe/                    # Grounding 描述生成与检验
+│   └── grounding/                # Grounding 描述生成与检验
 ├── 2-vllm/                       # vLLM OpenAI 兼容服务
 ├── Qwen/                         # 上游官方代码（finetune / utils / eval）
 ├── config/default.yaml           # 微调默认配置
@@ -137,7 +137,7 @@ dataset01/
 
 检测/分割框 → 目标描述 → caption → 导出 `jsons-GD`，见：
 
-- [`1-annotation-tool/yoloe/README.md`](1-annotation-tool/yoloe/README.md)
+- [`1-annotation-tool/grounding/README.md`](1-annotation-tool/grounding/README.md)
 - 独立 GitLab：[grounding-review](http://doc.geoai.com:5002/geoai/ai/grounding-review.git)
 
 ### 4.3 生成训练读取文件

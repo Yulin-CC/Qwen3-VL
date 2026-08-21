@@ -1,1 +1,0 @@
-# yoloe grounding utilities

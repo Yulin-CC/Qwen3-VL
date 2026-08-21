@@ -16,14 +16,14 @@ runs/
 *.draft/
 
 # Annotation tool portable build artifacts
-1-annotation-tool/yoloe/build/runtime/
-1-annotation-tool/yoloe/build/0-dist/
-1-annotation-tool/yoloe/build/cache/
-1-annotation-tool/yoloe/runtime/
-1-annotation-tool/yoloe/dist/
+1-annotation-tool/grounding/build/runtime/
+1-annotation-tool/grounding/build/0-dist/
+1-annotation-tool/grounding/build/cache/
+1-annotation-tool/grounding/runtime/
+1-annotation-tool/grounding/dist/
 
-# Nested repo metadata (yoloe 单独维护 GitLab 时本地保留)
-1-annotation-tool/yoloe/.git/
+# Nested repo metadata (grounding 单独维护 GitLab 时本地保留)
+1-annotation-tool/grounding/.git/
 
 # OS / editor
 .DS_Store
