@@ -9,7 +9,7 @@
 # Windows 请用同目录 1-start_review.bat（可连远程 vLLM）
 #
 # 远程端口映射：
-#   ssh -L 8082:localhost:8082 user@serve
+#   ssh -L 8082:localhost:8082 user@server
 #   浏览器打开 http://localhost:8082
 # ──────────────────────────────────────────────────────────
 

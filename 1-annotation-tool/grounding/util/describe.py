@@ -67,11 +67,14 @@ def scene_engine(scene=None):
 def describe_object(client: VLLMClient, crop_abs: str, label: str, rules: str = "",
                     avoid_phrases=None, min_phrases=None, with_zh: bool = False,
                     max_retries: int = 3, seed_phrases=None, lock_phrases=None):
-    return scene_engine().describe_object(
+    desc = scene_engine().describe_object(
         client, crop_abs, label, rules=rules,
         avoid_phrases=avoid_phrases, min_phrases=min_phrases, with_zh=with_zh,
         max_retries=max_retries, seed_phrases=seed_phrases, lock_phrases=lock_phrases,
     )
+    if isinstance(desc, dict):
+        desc["rules_scene"] = get_rules_scene()
+    return desc
 
 
 def describe_one_object(dataset_root, stem, obj_id, client: VLLMClient, rules: str = "",

@@ -514,6 +514,8 @@ let showBoxes = true;
 let browsePath = '';
 let naturalW = 1, naturalH = 1;
 let zhSeq = 0;           // 翻译请求序号：切图后丢弃旧结果
+let zhAbort = null;      // 切图时 abort 未完成的 ensure_zh / 预翻译
+let loadSeq = 0;         // 切图代数：只让最后一次 loadStem 生效
 let descZhToken = 0;     // 单目标刷新后补中文的序号
 let highlightObjId = null;  // 右侧卡片 / 画布点击高亮的目标
 let highlightPhrase = null; // 标签概览选中的描述（小写 key）
@@ -558,7 +560,13 @@ const matchPrevToCurr = new Map();
 const matchCurrToPrev = new Map();
 
 async function api(url, opts) {
-  const r = await fetch(url, opts);
+  let r;
+  try {
+    r = await fetch(url, opts);
+  } catch (e) {
+    if (e && e.name === 'AbortError') return { aborted: true };
+    return { error: (e && e.message) ? String(e.message) : '网络错误' };
+  }
   let data = {};
   let raw = '';
   try {
@@ -1140,6 +1148,27 @@ function removePhraseKeyFromObj(oid, rec){
   return changed;
 }
 
+/**
+ * V 点灭后：已选用的其它描述先填空；仍空的格用源标签。
+ * 不强制再点其它描述，切图也不因空槽拦住。
+ */
+function fillEmptyAppearanceSlotsWithSourceLabel(oid){
+  const oidN = normObjId(oid);
+  if (oidN == null || !item) return false;
+  repairObjSlotPlacement(oidN);
+  const caps = (item.captions && item.captions.captions) || [];
+  let changed = false;
+  objAppearanceIdxs(oidN).forEach(ci => {
+    const cap = caps[ci];
+    if (!cap) return;
+    if (objHasKeepSourceLabel(cap, oidN)) return;
+    if (capFeaturesForObj(cap, oidN).length) return;
+    setKeepSourceLabelOnCaptionQuiet(oidN, ci);
+    changed = true;
+  });
+  return changed;
+}
+
 function phrasePaintStatusText(){
   if (!phrasePaintMode) return '';
   const rec = lookupLabelPhrase(phrasePaintKey);
@@ -1239,7 +1268,10 @@ function confirmPhrasePaint(){
   const toAdd = [...phrasePaintOn].filter(id => !phrasePaintOrig.has(id));
   const toDel = [...phrasePaintOrig].filter(id => !phrasePaintOn.has(id));
   toAdd.forEach(oid => addPhraseToObj(oid, rec));
-  toDel.forEach(oid => removePhraseKeyFromObj(oid, rec));
+  toDel.forEach(oid => {
+    removePhraseKeyFromObj(oid, rec);
+    fillEmptyAppearanceSlotsWithSourceLabel(oid);
+  });
   const changed = toAdd.concat(toDel);
   if (changed.length){
     markDirty();
@@ -3562,6 +3594,19 @@ function mergeDescriptionsFromServer(serverDescs){
   }
 }
 
+function abortZhRequests(){
+  if (zhAbort){
+    try { zhAbort.abort(); } catch (_) {}
+  }
+  zhAbort = new AbortController();
+  zhSeq++;
+  if (prefetchZhTimer){
+    clearTimeout(prefetchZhTimer);
+    prefetchZhTimer = null;
+  }
+  prefetchZhJob = null;
+}
+
 async function ensureZhAsync(stem){
   // 整理占着 vLLM 时先不翻，避免和切图抢连接
   if (labelClusterBusyKey) return;
@@ -3576,12 +3621,13 @@ async function ensureZhAsync(stem){
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({obj_ids: objIds, mode}),
+      signal: zhAbort ? zhAbort.signal : undefined,
     });
   };
   try {
     setStatus(stem + ' · 翻译 caption…');
     const r1 = await postZh('captions');
-    if (!stillMe()) return;
+    if (!stillMe() || (r1 && r1.aborted)) return;
     if (r1.captions) mergeCaptionsKeepSelection(r1.captions);
     if (r1.descriptions) mergeDescriptionsFromServer(r1.descriptions);
     if (r1.captions || r1.descriptions){
@@ -3595,7 +3641,7 @@ async function ensureZhAsync(stem){
     }
     setStatus(stem + ' · 翻译目标描述…');
     const r2 = await postZh('descs');
-    if (!stillMe()) return;
+    if (!stillMe() || (r2 && r2.aborted)) return;
     if (r2.captions) mergeCaptionsKeepSelection(r2.captions);
     if (r2.descriptions) mergeDescriptionsFromServer(r2.descriptions);
     if (r2.captions || r2.descriptions){
@@ -3654,6 +3700,7 @@ async function prefetchNextZh(){
     method:'POST',
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({mode: 'all'}),
+    signal: zhAbort ? zhAbort.signal : undefined,
   }).catch(() => null);
   prefetchZhJob = {stem, promise};
   try {
@@ -3723,6 +3770,7 @@ async function saveIfDirty(){
 }
 
 async function loadStem(stem){
+  const seq = ++loadSeq;
   if (stem !== curStem){
     if (matchMode){
       alert('请先按 T 退出匹配');
@@ -3739,15 +3787,11 @@ async function loadStem(stem){
     if (leavingStem && leavingItem) repairAllSlotPlacements();
     const ok = await saveIfDirty();
     if (!ok) return;
+    if (seq !== loadSeq) return;
     if (leavingStem && leavingItem) resyncCaptionRefreshAfterSave(leavingStem, leavingItem);
   }
-  if (prefetchZhTimer){
-    clearTimeout(prefetchZhTimer);
-    prefetchZhTimer = null;
-  }
-  const reusePrefetch = (prefetchZhJob && prefetchZhJob.stem === stem)
-    ? prefetchZhJob.promise
-    : null;
+  abortZhRequests();
+  const reusePrefetch = null;
   curStem = stem;
   dirty = false;
   highlightObjId = null;
@@ -3758,16 +3802,17 @@ async function loadStem(stem){
   labelEditDstKey = null;
   speechOid = null;
   if (phrasePaintMode) exitPhrasePaintMode();
-  zhSeq++;  // 作废上一张图未完成的翻译
   descZhToken++;
   setStatus('加载中...');
   item = await api('/api/item/' + encodeURIComponent(stem));
+  if (seq !== loadSeq) return;
   if (item.error){ alert(item.error); return; }
   labelClusters = item.label_clusters || null;
   inferChosenFromCaptions();
   if (repairAllSlotPlacements()){
     markDirty();
     await persistItem();
+    if (seq !== loadSeq) return;
   }
   activeCap = 0;
   // 保留左上角「全图 / 跟目标」；仅退出手动平移缩放，按当前模式适配新图
@@ -3998,6 +4043,7 @@ async function refreshObjectDescription(oid){
         return;
       }
       const desc = res.description || {};
+      const sceneChanged = !!res.scene_changed;
       const keepSelL = new Set([...usedDesc].map(s => String(s).toLowerCase()));
       const keepKeys = new Set([...usedDesc].map(phraseContentKey).filter(Boolean));
       const seenSyn = new Set([...usedDesc].map(phraseSynonymKey).filter(Boolean));
@@ -4006,7 +4052,9 @@ async function refreshObjectDescription(oid){
         ...(res.kept || []),
       ].map(normPhrase).filter(Boolean);
       const lockSet = new Set();
-      keepChosen.forEach(c => phraseAxisTokenSet(c).forEach(t => lockSet.add(t)));
+      if (!sceneChanged){
+        keepChosen.forEach(c => phraseAxisTokenSet(c).forEach(t => lockSet.add(t)));
+      }
       const rawPh = (desc.phrases || []).map(p => String(p || '').trim());
       const rawZh = Array.isArray(desc.zh) ? desc.zh : [];
       const newPhrases = [];
@@ -4021,7 +4069,7 @@ async function refreshObjectDescription(oid){
           if (newPhrases.some(x => x.toLowerCase() === k)) return;
           if (ck && seenKeys.has(ck)) return;
           if (sk && seenSyn.has(sk)) return;
-          if (sharesLockedAxis(p, lockSet)) return;
+          if (lockSet.size && sharesLockedAxis(p, lockSet)) return;
         }
         if (ck) seenKeys.add(ck);
         if (sk) seenSyn.add(sk);
@@ -4080,9 +4128,11 @@ async function refreshObjectDescription(oid){
       renderObjects();
       const nKept = (res.kept || []).length;
       const nFresh = (res.refreshed || []).length;
-      setStatus(nKept
-        ? `obj ${oidN}：保留 ${nKept}，新刷 ${nFresh}（合计 ${newPhrases.length}）`
-        : `obj ${oidN} 描述已刷新（${newPhrases.length} 条）`);
+      setStatus(sceneChanged
+        ? `已按新规则刷新 obj ${oidN}：保留已选 ${nKept}，新候选 ${nFresh}`
+        : (nKept
+          ? `obj ${oidN}：保留 ${nKept}，新刷 ${nFresh}（合计 ${newPhrases.length}）`
+          : `obj ${oidN} 描述已刷新（${newPhrases.length} 条）`));
       if (res.zh_pending || newZh.some(z => !String(z || '').trim())){
         fillDescZhAsync(stemAtStart, oidN);
       }
@@ -5881,7 +5931,7 @@ async function onRulesSceneChange(){
   rulesScene = (res.config && res.config.rules_scene) || next;
   const d = (res.config && res.config.describe_rules_path) || '';
   const c = (res.config && res.config.caption_rules_path) || '';
-  setStatus(`规则场景: ${rulesScene || '通用'} · ${d.split(/[\\/]/).pop() || ''} / ${c.split(/[\\/]/).pop() || ''}`);
+  setStatus(`规则场景: ${rulesScene || '通用'} · ${d.split(/[\\/]/).pop() || ''} / ${c.split(/[\\/]/).pop() || ''} · 点目标「刷新」按新规则生成`);
 }
 
 (async () => {

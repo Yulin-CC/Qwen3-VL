@@ -7,8 +7,12 @@
 import base64
 import json
 import mimetypes
+import threading
 from typing import Optional
 from urllib import error, request
+
+# exhaustive(8) + caption 流水线共用同一进程时，限制同时在途请求，避免把链路打满后假死
+_CALL_GATE = threading.Semaphore(6)
 
 
 DEFAULT_BASE = "http://127.0.0.1:8081/v1"
@@ -62,8 +66,9 @@ class VLLMClient:
             method="POST",
         )
         try:
-            with request.urlopen(req, timeout=self.timeout) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
+            with _CALL_GATE:
+                with request.urlopen(req, timeout=self.timeout) as resp:
+                    body = json.loads(resp.read().decode("utf-8"))
         except error.URLError as e:
             raise RuntimeError(f"vLLM 请求失败 ({url}): {e}") from e
         msg = body["choices"][0]["message"]

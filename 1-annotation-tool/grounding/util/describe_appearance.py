@@ -108,23 +108,14 @@ def describe_object(client, crop_abs: str, label: str, rules: str = "",
                     max_retries: int = 2, seed_phrases=None, lock_phrases=None):
     pol = get_scene_policy()
     need = max(1, int(min_phrases if min_phrases is not None else policy_max_phrases(pol)))
-    if lock_phrases or seed_phrases or with_zh:
-        from describe_default import describe_object as _base
-        desc = _base(
-            client, crop_abs, label, rules=rules,
-            avoid_phrases=avoid_phrases, min_phrases=need, with_zh=with_zh,
-            max_retries=max_retries, seed_phrases=seed_phrases,
-            lock_phrases=lock_phrases,
-        )
-        phrases = sanitize_phrases(desc.get("phrases") or [], label, max_n=need)
-        if not phrases:
-            raise ValueError("外观策略清洗后无有效短语")
-        desc["phrases"] = phrases
-        desc["zh"] = (desc.get("zh") or [])[:len(phrases)]
-        while len(desc["zh"]) < len(phrases):
-            desc["zh"].append("")
-        return desc
-
+    avoid = [
+        str(p).strip() for p in (avoid_phrases or [])
+        if isinstance(p, str) and str(p).strip()
+    ]
+    locked = [
+        str(p).strip() for p in (lock_phrases or [])
+        if isinstance(p, str) and str(p).strip()
+    ]
     hint = label_natural_reading(label)
     example = '{"phrases":["white car","black car"]}'
     if hint == "person":
@@ -136,6 +127,20 @@ def describe_object(client, crop_abs: str, label: str, rules: str = "",
         "Do NOT use subtype words (sedan/SUV/pickup/taxi). "
         "Only color (or other surface look) + class: white car, gray truck.\n"
     )
+    extra = ""
+    if avoid:
+        listed = "; ".join(avoid[:16])
+        extra += (
+            f"Do NOT reuse or lightly paraphrase these already-used phrases: {listed}.\n"
+            f"Write DIFFERENT visible appearance axes instead.\n"
+        )
+    if locked:
+        listed = "; ".join(locked[:8])
+        extra += (
+            f"LOCKED (annotator already chose these; keep them occupied): {listed}.\n"
+            f"Write other visible appearance (color / clothing / surface), "
+            f"not the locked modifiers.\n"
+        )
     task = (
         f"Class label (GROUND TRUTH): {label}\n"
         f"Natural reading: {hint}\n"
@@ -146,6 +151,7 @@ def describe_object(client, crop_abs: str, label: str, rules: str = "",
         f"- Combine with the base class. Never emit the bare label '{label}'.\n"
         f"- {person_line}"
         f"- Each phrase 2–8 words.\n"
+        f"{extra}"
         f"Return ONLY valid JSON, example: {example}"
     )
     prompt = (str(rules).strip() + "\n\n" + task) if rules and str(rules).strip() else task

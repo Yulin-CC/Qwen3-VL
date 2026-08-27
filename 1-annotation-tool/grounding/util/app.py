@@ -49,6 +49,7 @@ from rules_io import (
     get_rules_scene,
     get_scene_policy,
     list_rule_scenes,
+    normalize_scene,
     resolve_caption_rules_path,
     resolve_describe_rules_path,
     set_rules_scene,
@@ -188,11 +189,11 @@ def _root():
     return state["dataset_root"]
 
 
-def _client():
+def _client(timeout=None):
     return VLLMClient(
         base_url=state["base_url"],
         model=state["model"],
-        timeout=state.get("timeout") or 600,
+        timeout=timeout if timeout is not None else (state.get("timeout") or 600),
         enable_thinking=False,
     )
 
@@ -237,11 +238,11 @@ def list_stems():
     return sorted(stems)
 
 
-def translate_text(text: str) -> str:
+def translate_text(text: str, timeout=20) -> str:
     if not text:
         return ""
     try:
-        raw = _client().text(
+        raw = _client(timeout=timeout).text(
             "Translate to Simplified Chinese. Return Chinese only, no quotes.\n\n"
             + text,
             temperature=0.2,
@@ -275,7 +276,7 @@ def translate_batch(texts):
             f"{numbered}"
         )
         try:
-            raw = _client().text(prompt, temperature=0.2, max_tokens=max_tokens)
+            raw = _client(timeout=20).text(prompt, temperature=0.2, max_tokens=max_tokens)
             data = extract_json_object(raw)
             zh = data.get("zh") or []
             for i, t in enumerate(part):
@@ -439,6 +440,8 @@ def ensure_zh_for_item(stem, meta, caps, descs, obj_ids=None, mode="all"):
     mode = (mode or "all").strip().lower()
     if mode not in {"captions", "descs", "all"}:
         mode = "all"
+    if not _client(timeout=8).health_check():
+        raise RuntimeError(f"模型服务不可用: {state.get('base_url')}")
     did = False
 
     # 1) captions 优先（界面立刻要看）
@@ -776,6 +779,7 @@ def config_api():
         payload["rules_scenes"] = list_rule_scenes()
         payload["describe_rules_path"] = resolve_describe_rules_path()
         payload["caption_rules_path"] = resolve_caption_rules_path()
+        payload["max_phrases"] = int(get_scene_policy().get("max_phrases") or 8)
         payload["model_services"] = list_services()
         payload["servers_path"] = servers_config_path()
         return jsonify(payload)
@@ -811,6 +815,7 @@ def config_api():
         "rules_scene": get_rules_scene(),
         "describe_rules_path": resolve_describe_rules_path(),
         "caption_rules_path": resolve_caption_rules_path(),
+        "max_phrases": int(get_scene_policy().get("max_phrases") or 8),
         "model_services": list_services(),
         "servers_path": servers_config_path(),
     }})
@@ -1463,6 +1468,10 @@ def refresh_desc(stem, obj_id):
                     avoid.append(p)
 
         DISPLAY_N = int(get_scene_policy().get("max_phrases") or 8)
+        DISPLAY_CAP = max(DISPLAY_N, 8)
+        cur_scene = get_rules_scene()
+        old_scene = normalize_scene((old or {}).get("rules_scene"))
+        scene_changed = old_scene != cur_scene
         keep = keep[:DISPLAY_N]
         slots = max(0, DISPLAY_N - len(keep)) if keep else DISPLAY_N
         old_phrases = (old or {}).get("phrases") or []
@@ -1504,7 +1513,7 @@ def refresh_desc(stem, obj_id):
                     break
             return out_p
 
-        if keep and slots == 0:
+        if keep and slots == 0 and not scene_changed:
             r = dict(old or {})
             r["obj_id"] = obj_id
             r["stem"] = stem
@@ -1512,10 +1521,12 @@ def refresh_desc(stem, obj_id):
             r["zh"] = _attach_zh_fast(keep)
             r["label"] = (old or {}).get("label") or r.get("label") or ""
             r["chosen"] = chosen
+            r["rules_scene"] = cur_scene
             write_json(desc_path, r)
             return jsonify({
                 "ok": True, "description": r, "kept": keep,
                 "refreshed": [], "around": [],
+                "scene_changed": False,
                 "zh_pending": any(not z for z in r["zh"]),
             })
 
@@ -1525,21 +1536,23 @@ def refresh_desc(stem, obj_id):
         ban_l = {p.lower() for p in avoid_for_gen}
         ban_keys = {phrase_content_key(p) for p in avoid_for_gen if phrase_content_key(p)}
         ban_syn = {phrase_synonym_key(p) for p in avoid_for_gen if phrase_synonym_key(p)}
-        lock_axis = locked_axis_tokens(keep) if keep else set()
 
-        # 单次视觉调用：已锁定短语换剩余特征维（不 seed 同维换皮）；只生成英文
-        need = slots if keep else DISPLAY_N
+        # 单次视觉调用。切规则后：不锁旧场景修饰，按新规则生成一整组候选（已选用保留）。
+        need = DISPLAY_N if (scene_changed or not keep) else slots
+        lock_for_gen = None if scene_changed else (keep if keep else None)
+        lock_axis = set() if scene_changed else (locked_axis_tokens(keep) if keep else set())
         r = describe_one_object(
             _root(), stem, obj_id, client, rules,
             write=False, avoid_phrases=avoid_for_gen, min_phrases=need,
             with_zh=False, max_retries=1,
             seed_phrases=None,
-            lock_phrases=keep if keep else None,
+            lock_phrases=lock_for_gen,
         )
         fresh = _take_fresh(r, ban_l, ban_keys, ban_syn, need, lock_axis=lock_axis)
         if len(fresh) < 1:
             raise ValueError("模型未返回可替换的新短语")
 
+        merge_cap = DISPLAY_CAP if scene_changed else DISPLAY_N
         if keep:
             keep_l = {p.lower() for p in keep}
             phrases = []
@@ -1558,12 +1571,12 @@ def refresh_desc(stem, obj_id):
                 if p.lower() not in seen_l:
                     phrases.append(p)
                     seen_l.add(p.lower())
-            while fi < len(fresh) and len(phrases) < DISPLAY_N:
+            while fi < len(fresh) and len(phrases) < merge_cap:
                 if fresh[fi].lower() not in seen_l:
                     phrases.append(fresh[fi])
                     seen_l.add(fresh[fi].lower())
                 fi += 1
-            phrases = phrases[:DISPLAY_N]
+            phrases = phrases[:merge_cap]
         else:
             phrases = fresh[:DISPLAY_N]
 
@@ -1576,6 +1589,7 @@ def refresh_desc(stem, obj_id):
         r["zh"] = _attach_zh_fast(phrases)
         r["label"] = (old or {}).get("label") or r.get("label") or ""
         r["chosen"] = chosen
+        r["rules_scene"] = cur_scene
         write_json(desc_path, r)
         return jsonify({
             "ok": True,
@@ -1583,6 +1597,7 @@ def refresh_desc(stem, obj_id):
             "kept": keep,
             "around": [],
             "refreshed": fresh,
+            "scene_changed": scene_changed,
             "zh_pending": any(not z for z in r["zh"]),
         })
     except Exception as e:

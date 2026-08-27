@@ -469,6 +469,9 @@ def run_generate(
                         print(f"  ⚠ caption {stem}: {e}")
 
                 def on_image_done(stem):
+                    out_p = os.path.join(draft_dir(dataset_root), "captions", f"{stem}.json")
+                    if (not force) and os.path.isfile(out_p):
+                        return
                     cap_pool.submit(_cap_one, stem)
 
             describe_dataset(
