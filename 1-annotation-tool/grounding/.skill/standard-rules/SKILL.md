@@ -1,186 +1,164 @@
 ---
 name: standard-rules
 description: >-
-  Authors a new grounding rules scene after a fill-in questionnaire. Writes
-  describe_rules_<slug>.md, caption_rules_<slug>.md, describe_<slug>.py, and
-  scenes.json in this package. Use when the user says 新规则, 加场景,
-  改 describe 规则, 写 caption_rules, or wants a new rules_scene dropdown item.
+  Authors and extends grounding describe/caption rules in this package.
+  Writes describe_rules_<slug>.md, caption_rules_<slug>.md, describe_<slug>.py,
+  and scenes.json. Use when the user says 新规则, 加场景, 改 describe 规则,
+  写 caption_rules, or wants a new rules_scene dropdown item.
 ---
 
-# 🏷️ Standard-Rules（新场景规则 + describe 策略）
+# 🏷️ Standard-Rules（describe / caption 规则 + 新场景）
 
-  - **概述**: 用户要「加场景 / 新规则 / 改 describe·caption 规则」时触发。先用填空题确认需求，**用户确认后再写文件**；参考现有 `rules/`，生成成对 md、对应的 `describe_<slug>.py`，并登记 `scenes.json`。
-  - **日期**: 2026-08-21
-
----
-
-## 0 执行前检查
-
-  - **触发场景**：新规则、加场景、改短语规则、写 caption_rules、扩展 default/appearance。
-  - **本 Skill 位置**：`grounding/.skill/standard-rules/`（包内专用；尚未迁入通用技能库）。
-  - **规则根目录**：本包 `rules/`（`.skill/` 上一级下的 `rules/`）。
-  - **引擎**：本包 `util/describe.py`（调度）+ `describe_default.py` / `describe_appearance.py` / `describe_<slug>.py`
-  - **禁止**：改 `auto/`、`yoloe/`；为新场景去改调度 `describe.py`；未确认就写文件。
-  - **进度台账**：本 Skill 为短确认 + 一次落盘，**不需要** `todo.md`。
-  - **参考模板（落盘前必读）**：
-    - 通用：`describe_rules.md` + `caption_rules.md`
-    - 外观：`describe_rules_appearance.md` + `caption_rules_appearance.md`
-    - 引擎：`util/describe_default.py`、`util/describe_appearance.py`
-    - 策略：`scenes.json`
-    - 章节骨架：可对照 `standard-gddata_rules`（若本机技能库有）
+  - **概述**: 写/改短语与 caption 规则，或加一套新场景。规则在本包 `rules/`；新场景先填空、**确认后再写文件**。
+  - **日期**: 2026-08-28
 
 ---
 
-## 1 向用户确认（填空题，未确认不得写文件）
+## 1 范围与路径
 
-  把下面整块贴给用户。能从对话推断的项先填进括号当默认；未知留空。等用户回复「按此生成」或逐项改定后再进入 [2]。
+  - **做**：英文 describe 短语、caption 组句、新建/改场景规则。
+  - **不做**：中文短语正文；caption 阶段改短语语义（只改句式）；改 `auto/`、`yoloe/`；改调度 `util/describe.py`。
+  - **规则根**：本包 `rules/`（`.skill/` 上一级下的 `rules/`）。
+  - **引擎**：`util/describe.py` 按 scene 加载 `describe_default.py` / `describe_appearance.py` / `describe_<slug>.py`。
 
-    ```markdown
-    请填空后回复「按此生成」（改括号即可）：
+|层|文件|作用|
+|---|---|---|
+|通用 describe|`describe_rules.md`|基线短语|
+|通用 caption|`caption_rules.md`|基线组句（短语锁定）|
+|场景 describe|`describe_rules_<slug>.md`|专用要求 + 类型表|
+|场景 caption|`caption_rules_<slug>.md`|场景口吻 + 示例|
+|策略|`scenes.json`|下拉 label + max_phrases / 三开关|
+|引擎|`util/describe_<slug>.py`|与 md 一一对应；通用是 `describe_default.py`|
 
-    1. 场景 id（slug，小写英文+下划线）：[________]  （例：appearance / vesthalmet）
-    2. 下拉显示名：[________]
-    3. 从哪套复制骨架：[default 通用 | appearance 只写外观]
-    4. 每目标最多几条短语：[8 | 3 | ________]
-    5. 允许的属性轴：
-       - 外观（颜色/服装/涂装）：[是 | 否]
-       - 子类/角色（sedan / student）：[是 | 否]
-       - 动作/状态（walking / parked）：[是 | 否]
-       - 方位（on the road / left）：[是 | 否]
-    6. 车辆禁止子类词（sedan/SUV/taxi 等改写成中心词）：[是 | 否]
-    7. 图内同类穷尽补查（exhaustive）：[是 | 否]
-    8. caption 必须覆盖全部目标及其短语（caption_cover_all）：[是 | 否]
-    9. 场景焦点（一句话，写进 describe 概述 + §1.2）：[________]
-    10. 关键类别与推荐英文用词：[________]
-    11. 看不清时：[不猜 | 中性描述 ________]
-    12. caption 口吻补一句（可空）：[________]
-    ```
-
-  **(1)** slug 不能是 `default` / `base` / `general`（那是通用，改 `describe_rules.md` 本身）。
-  **(2)** slug 已存在 → 先列出旧 `scenes.json` 行与 md 路径，问是覆盖还是换 id。
-  **(3)** 第 3 项决定复制哪一对 md **和** 哪份 `describe_*.py`；第 5–8 项写入 `scenes.json`。**不要改**调度文件 `describe.py`。
-  **(4)** 第 6 项=是 → `ban_vehicle_subtypes=true`（走外观清洗）。第 7=是 → `exhaustive=true`。第 8=是 → `caption_cover_all=true`。
-
-  确认后在回复里复述一表（id / max_phrases / 四轴 / 三开关），再写盘。
+  - **注意**：表格用紧致写法 `|列|列|`。新场景 describe + caption **成对**新增。执行某场景以该文件为准，未覆盖条款回退通用。
 
 ---
 
-## 2 落盘顺序
+## 2 写法要点
 
-  全部写入本包（`.skill/` 上一级），不要动 `auto/`、`yoloe/`。
+### 2.1 Describe
 
-### 2.1 复制并改 md
+|要求|说明|
+|---|---|
+|目标描述|单个裁剪目标的短英文名词短语（2–8 词，不要整句）|
+|类别|源标签为真值，描述须贴该类|
+|视觉依据|只写看得见的；看不清的字/logo 不编|
+|禁止|不提裁剪框、绿框、标注痕迹|
 
-  **(1)** 按填空第 3 项复制：
+|类型|说明|示例|
+|---|---|---|
+|属性|子类/角色等|person → student；car → taxi|
+|外观|颜色、服装、涂装|person in white jacket|
+|动作/状态|可见姿态|person walking；car parked|
 
-    ```text
-    rules/describe_rules.md              → rules/describe_rules_<slug>.md
-    rules/caption_rules.md               → rules/caption_rules_<slug>.md
-    # 或 appearance 那一对 *_appearance.md
-    ```
+```json
+{"phrases": ["...", "..."]}
+```
 
-  **(2)** describe 必改：标题与概述（含第 9 项焦点、日期当天）；**§1.2 专用要求**写成紧致表（场景焦点、关键属性、用词、条数、禁止轴）；§2 类型表只保留第 5 项允许的轴；§4 JSON schema **不改**。
+  场景文件主要改：概述、**§1.2 专用要求**（必填紧致表）、§2 类型表、§3 口吻。**§4 JSON schema 不改**。
 
-  **(3)** caption 必改：概述可加第 12 项一句；**§1 核心原则不要删行**（短语锁定必须保留）；§3 示例换成该场景短语（至少 1 个单句 + 1 个多句）；§4 JSON schema **不改**。
+```markdown
+### 1.2 专用要求
 
-  **(4)** 表格用紧致写法 `|列|列|`，单元格两侧不加空格。
+|要求|说明|
+|---|---|
+|场景焦点|……|
+|条数上限|每目标最多 N 条；不足不注水|
+|允许轴|……|
+|禁止轴|……|
+|用词偏好|……|
+|不确定|不猜 / ……|
+```
 
-  描述规则 §1.2 表示例：
+### 2.2 Caption
 
-    ```markdown
-    ### 1.2 专用要求
+  - **原则**：只改句式，不改短语；一条 caption 可多句，短语必须全部**原样**出现。
 
-    |要求|说明|
-    |---|---|
-    |场景焦点|……|
-    |条数上限|每个目标最多 N 条；不足不注水|
-    |允许轴|……|
-    |禁止轴|……|
-    |用词偏好|……|
-    |不确定|不猜 / ……|
-    ```
+|要求|说明|
+|---|---|
+|短语锁定|拼写、空格、连字符一致|
+|禁止替换/增删|不改写成同类词，不省略、不塞未给定指称|
+|禁止内容|不提框、crop、json、dataset、model|
 
-### 2.2 登记 `scenes.json`
+```json
+{"caption": "..."}
+```
 
-  在 `scenes` 数组追加一行（`id` 为 slug；通用那行 `id=""` 不要动）：
+  场景文件：概述可加一句；**§1 核心原则不删行**；§3 示例换成该场景（至少 1 个单句 + 1 个多句）。**§4 schema 不改**。
 
-    ```json
-    {
-      "id": "<slug>",
-      "label": "<下拉显示名>",
-      "max_phrases": 3,
-      "ban_vehicle_subtypes": true,
-      "exhaustive": true,
-      "caption_cover_all": true
-    }
-    ```
+---
 
-  字段与填空对应：`max_phrases`←4；`ban_vehicle_subtypes`←6；`exhaustive`←7；`caption_cover_all`←8。
+## 3 加新场景（填空后落盘）
 
-  - **注意**：下拉靠扫描 `describe_rules_<slug>.md`；json 负责 **label + 机器策略**。缺 json 行则策略回退通用（最多 8 条、无穷尽），下拉会是假切换。
+  触发：新规则、加场景、改 describe/caption 规则、扩展 default/appearance。  
+  slug 不能是 `default` / `base` / `general`（那是改通用 md 本身）。已存在则先问覆盖还是换 id。
 
-### 2.3 复制 `describe_<slug>.py`（与 md 一一对应）
+### 3.1 填空（未确认不得写文件）
 
-  只换 md **不够**。调度 `util/describe.py` 按 scene 加载 `describe_<slug>.py`（通用是 `describe_default.py`）。新增场景：**复制引擎文件，不要改调度。**
+```markdown
+请填空后回复「按此生成」（改括号即可）：
 
-    ```text
-    util/describe_default.py      → util/describe_<slug>.py   # 骨架选 default 时
-    util/describe_appearance.py   → util/describe_<slug>.py   # 骨架选 appearance 时
-    ```
+1. 场景 id（slug，小写英文+下划线）：[________]  （例：appearance）
+2. 下拉显示名：[________]
+3. 从哪套复制骨架：[default 通用 | appearance 只写外观]
+4. 每目标最多几条短语：[8 | 3 | ________]
+5. 允许的属性轴：
+   - 外观（颜色/服装/涂装）：[是 | 否]
+   - 子类/角色（sedan / student）：[是 | 否]
+   - 动作/状态（walking / parked）：[是 | 否]
+   - 方位（on the road / left）：[是 | 否]
+6. 车辆禁止子类词（sedan/SUV/taxi 等改写成中心词）：[是 | 否]
+7. 图内同类穷尽补查（exhaustive）：[是 | 否]
+8. caption 必须覆盖全部目标及其短语（caption_cover_all）：[是 | 否]
+9. 场景焦点（一句话）：[________]
+10. 关键类别与推荐英文用词：[________]
+11. 看不清时：[不猜 | 中性描述 ________]
+12. caption 口吻补一句（可空）：[________]
+```
 
-  **(1)** 文件头 `RULES_FILE` 改成 `describe_rules_<slug>.md`；改 `SYSTEM_PROMPT` / 清洗 / `check_phrases_apply` 以贴合填空第 5–7 项。
+  第 3 项决定复制哪一对 md **和** 哪份 `describe_*.py`。第 6=是 → `ban_vehicle_subtypes`；第 7=是 → `exhaustive`；第 8=是 → `caption_cover_all`。确认后复述一表再写盘。
 
-  **(2)** 必须导出 `describe_object(client, crop_abs, label, rules=..., ...)`，签名与 `describe_default.py` 一致。
+### 3.2 落盘
 
-  **(3)** 第 7 项=是：保留或实现 `check_phrases_apply`（appearance 已有）。第 7 项=否：可删该函数。
+  **(1)** 先 Read 将要复制的那一对 md，再改写。
 
-  **(4)** 缺 `describe_<slug>.py` 时调度会回退 `describe_default.py` 并打警告，等于假切换。
+```text
+rules/describe_rules.md                 → rules/describe_rules_<slug>.md
+rules/caption_rules.md                  → rules/caption_rules_<slug>.md
+util/describe_default.py                → util/describe_<slug>.py
+# 或 appearance 那一套 *_appearance.md / describe_appearance.py
+```
 
-  **(5)** **禁止**改 `util/describe.py`。新建脚本才加文件头（`standard-create_script`）。
+  **(2)** `scenes.json` 的 `scenes` 数组追加一行（不要动 `id=""` 的通用行）：
 
-  - **注意**：`caption.py` 的覆盖补句读 `caption_cover_all`，一般只改 md 示例。
+```json
+{
+  "id": "<slug>",
+  "label": "<下拉显示名>",
+  "max_phrases": 3,
+  "ban_vehicle_subtypes": true,
+  "exhaustive": true,
+  "caption_cover_all": true
+}
+```
 
-### 2.4 自检
+  **(3)** `describe_<slug>.py`：文件头 `RULES_FILE` 指向新 md；导出 `describe_object`（签名同 `describe_default.py`）。第 7 项=是则保留 `check_phrases_apply`。缺 py 或缺 json 行都是假切换。**禁止改** `util/describe.py`。
 
-  - [ ] `describe_rules_<slug>.md` 与 `caption_rules_<slug>.md` 成对
-  - [ ] `util/describe_<slug>.py` 存在，且导出 `describe_object`
+  **(4)** 下拉靠扫描 `describe_rules_<slug>.md`；json 负责 label + 机器策略。换下拉**不会**自动重跑 draft。
+
+---
+
+## 4 自检与试跑
+
+  - [ ] describe / caption md 成对；§1.2 非空；表格紧致 `|列|列|`
+  - [ ] `util/describe_<slug>.py` 存在且导出 `describe_object`
   - [ ] `scenes.json` 有该 id，四字段与填空一致
-  - [ ] **未改** `util/describe.py`
-  - [ ] 未改输出 JSON：`{"phrases":[...]}` / `{"caption":"..."}`
-  - [ ] 未改 `auto/`、`yoloe/`
+  - [ ] **未改** `util/describe.py`、输出 schema、`auto/`、`yoloe/`
+  - [ ] 短语：英文短名词、贴类别、不编造、不提框
+  - [ ] caption：短语原样全覆盖
 
-  用 `--no_llm` 或用户同意时 `--limit 1` 冒烟（调用 `agent-auto_generate` 的试跑约定）。
+```bash
+python util/generate.py --dataset "<data_root>" --rules-scene "<slug>" --limit 1
+```
 
----
-
-## 3 工具索引
-
-  - 工具根目录：本包（`.skill/` 上一级）
-
-  | 分类 | 工具路径 | 用途 |
-  | --- | --- | --- |
-  | 模板 | `rules/describe_rules.md` | default 通用 describe |
-  | 模板 | `rules/caption_rules.md` | default caption（短语锁定） |
-  | 模板 | `rules/describe_rules_appearance.md` | appearance describe |
-  | 模板 | `rules/caption_rules_appearance.md` | appearance caption |
-  | 策略 | `rules/scenes.json` | id/label/max_phrases/三开关 |
-  | 扫描 | `util/rules_io.py` | 下拉 + `get_scene_policy()` |
-  | 引擎 | `util/describe.py` | 调度：按 scene 加载 describe_<slug>.py |
-  | 引擎 | `util/describe_default.py` | ↔ `describe_rules.md` |
-  | 引擎 | `util/describe_appearance.py` | ↔ `describe_rules_appearance.md` |
-  | 引擎 | `util/caption.py` | `caption_cover_all` 时覆盖补句 |
-  | 试跑 | `util/generate.py` | `--rules-scene <slug> --limit 1` |
-
-  - **注意**：Agent 必须先 Read 将要复制的那一对 md，再改写，避免凭记忆漏章节。
-
----
-
-## 4 交付
-
-  **(1)** 列出新文件：`describe_rules_<slug>.md`、`caption_rules_<slug>.md`、`describe_<slug>.py`、`scenes.json` 新增行。明确写：**未改** `describe.py`。
-  **(2)** 告诉用户：审阅台刷新后下拉会出现该项；**换下拉不会自动重跑**，需再点生成或 CLI `--rules-scene <slug>`。
-  **(3)** 给一条试跑命令：
-
-    ```bash
-    python util/generate.py --dataset "<data_root>" --rules-scene "<slug>" --limit 1
-    ```
+  审阅台刷新后下拉会出现该项。试跑约定见 `agent-auto_generate`。
