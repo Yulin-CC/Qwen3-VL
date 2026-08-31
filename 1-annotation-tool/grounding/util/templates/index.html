@@ -128,7 +128,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
 .label-ph-cluster-chips{display:flex;flex-wrap:wrap;gap:6px;align-content:flex-start}
 #label-list .phrase-list-main{flex-direction:column;flex-wrap:nowrap;gap:8px;align-items:stretch}
 #speech-pop{
-  position:absolute;z-index:8;display:none;max-width:220px;min-width:120px;
+  position:absolute;z-index:8;display:none;max-width:260px;min-width:132px;
   pointer-events:auto;background:#fffbeb;color:#1c1917;
   border:2.5px solid #1c1917;border-radius:18px;padding:8px 10px 10px;
   box-shadow:4px 4px 0 #1c1917;font-size:12px;line-height:1.35;
@@ -154,18 +154,30 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
 #speech-pop .speech-hd{font-weight:700;font-size:11px;margin-bottom:6px;color:#9a3412;
   display:flex;align-items:center;justify-content:space-between;gap:8px}
 #speech-pop .speech-hd span{min-width:0;word-break:break-word}
+#speech-pop .speech-hd-actions{display:flex;align-items:center;gap:4px;flex-shrink:0}
 #speech-pop .speech-del{
   flex-shrink:0;padding:2px 8px;border-radius:999px;border:1.5px solid #9a3412;
   background:#fff;color:#9a3412;cursor:pointer;font-size:11px;font-weight:700}
 #speech-pop .speech-del:hover{background:#fecaca}
+#speech-pop .speech-add{
+  flex-shrink:0;width:22px;height:22px;padding:0;border-radius:999px;
+  border:1.5px solid #9a3412;background:#fff;color:#9a3412;cursor:pointer;
+  font-size:16px;font-weight:700;line-height:1;display:flex;align-items:center;justify-content:center}
+#speech-pop .speech-add:hover,#speech-pop .speech-add.on{background:#fb923c;color:#fff;border-color:#9a3412}
 #speech-pop .speech-empty{color:#78716c;padding:2px 0}
+#speech-pop .speech-row{display:flex;align-items:stretch;gap:4px;margin-top:4px}
 #speech-pop .speech-ph{
   display:block;width:100%;text-align:left;margin-top:4px;padding:4px 8px;
   border-radius:999px;border:1.5px solid #1c1917;background:#fff;color:#1c1917;
   cursor:pointer;font-size:12px;word-break:break-word;
 }
+#speech-pop .speech-row .speech-ph{margin-top:0;flex:1;min-width:0;width:auto}
 #speech-pop .speech-ph:hover{background:#fed7aa}
 #speech-pop .speech-ph.on{background:#fb923c;color:#fff;border-color:#9a3412;font-weight:600}
+#speech-pop .speech-trash{
+  flex-shrink:0;width:26px;padding:0;border-radius:999px;border:1.5px solid #9a3412;
+  background:#fff;color:#9a3412;cursor:pointer;display:flex;align-items:center;justify-content:center}
+#speech-pop .speech-trash:hover{background:#fecaca}
 .obj-card{background:#20243a;border:1px solid #2d3148;border-radius:8px;padding:8px;display:flex;gap:10px;flex-shrink:0;cursor:pointer}
 .obj-card.active{border-color:#7c86f5}
 .obj-card.pending{border-color:#ef4444;box-shadow:0 0 0 1px #ef444466,0 0 10px #ef444433;
@@ -365,7 +377,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
   <button class="btn btn-outline btn-sm" id="btn-fit-full" onclick="setFitMode('full')">全图</button>
   <button class="btn btn-outline btn-sm" id="btn-fit-zoom" onclick="setFitMode('zoom')">跟目标</button>
   <button class="btn btn-outline btn-sm on" id="btn-boxes" onclick="toggleBoxes()" title="显示/隐藏（R）">矩形框</button>
-  <span id="cap-hint">A/D 切图 · W/S 切 caption · T 匹配上一张 · Q 全图 · E 跟目标 · R 框显隐 · 标签概览点目标出对话框 · Delete 删目标 · G 改描述 · 点描述后 V 点亮/点灭 · F 确认 · Ctrl+滚轮缩放 · 按住拖动 · 切图/切 caption 自动保存</span>
+  <span id="cap-hint">W/S 切 caption · T 前图匹配 · R 框显隐 · F 改单目标 · V 批量改目标</span>
 </div>
 
 <div id="main">
@@ -520,14 +532,16 @@ let descZhToken = 0;     // 单目标刷新后补中文的序号
 let highlightObjId = null;  // 右侧卡片 / 画布点击高亮的目标
 let highlightPhrase = null; // 标签概览选中的描述（小写 key）
 let highlightClass = null;  // 标签概览选中的大类（如 car）
-let labelEditMode = false;  // 标签概览：G 改/增/删描述
+let labelEditMode = false;  // 标签概览：F 改单目标
 let labelEditOid = null;
-let labelEditPhraseKey = null;  // 右侧窗口选中的源描述
-let labelEditDstKey = null;     // 对话框里选中、待删/待换的描述
+let labelEditPhraseKey = null;  // 右侧芯片（新增/替换的源）
+let labelEditDstKey = null;     // 对话框里选中、待替换的描述
+let labelEditAddMode = false;   // 点了漫画框 +，下一步点芯片即新增
+let labelPhrasePool = new Map(); // 从目标删下、仍留在右侧候选池的描述
 let speechOid = null;           // 标签概览画布上弹出对话框的目标
 let phrasePaintMode = false;    // 标签概览：V 点亮/点灭某条描述
 let phrasePaintKey = null;
-let phrasePaintOn = new Set();  // 确认后应带有该描述的 obj
+let phrasePaintOn = new Set();  // 退出时应带有该描述的 obj
 let phrasePaintOrig = new Set(); // 进入 V 时已有该描述的 obj
 let labelClusters = null;       // 标签概览芯片整理结果 {class_groups, phrase_groups}
 let labelClusterBusyKey = null; // 正在整理的类别 key
@@ -824,6 +838,14 @@ function collectLabelGroups(){
     exampleOid: g.objIds[0],
     phrases: [...g.phrases.values()],
   }));
+  labelPhrasePool.forEach((m, classKey) => {
+    const g = groups.find(x => x.key === classKey);
+    if (!g) return;
+    m.forEach(rec => {
+      if (!g.phrases.some(p => p.key === rec.key))
+        g.phrases.push({phrase: rec.phrase, zh: rec.zh || '', key: rec.key, objIds: []});
+    });
+  });
   groups.forEach(g => {
     g.phrases.sort((a, b) => {
       const ra = clusterRank('phrase', a.key);
@@ -977,18 +999,14 @@ function lookupLabelPhrase(key){
 
 function labelEditStatusText(){
   if (!labelEditMode) return '';
-  const src = lookupLabelPhrase(labelEditPhraseKey);
-  const srcPh = src ? src.phrase : '';
   const dst = labelEditDstKey || '';
   if (labelEditOid == null)
-    return '改描述 · 点图中目标（右侧出对话框）· G 退出';
-  if (!dst && !srcPh)
-    return `改描述 · obj ${labelEditOid} · Delete 删该目标；点对话框描述后 Delete 删该条；或点右侧描述后 F 新增 · G 退出`;
-  if (dst && !srcPh)
-    return `改描述 · 已选对话框「${dst}」· Delete 删该条；不选描述时 Delete 删目标；点右侧描述后 B 替换 / F 新增 · G 退出`;
-  if (!dst && srcPh)
-    return `改描述 · 已选右侧「${srcPh}」· F 新增到 obj ${labelEditOid}；Delete 删该目标；先点对话框描述再 B 替换 · G 退出`;
-  return `改描述 · obj ${labelEditOid} 「${dst}」←「${srcPh}」· B 替换 / F 新增 / Delete 删该条 · G 退出`;
+    return '改单目标 · 点图中目标（右侧出对话框）· F 退出';
+  if (labelEditAddMode)
+    return `改单目标 · obj ${labelEditOid} · 点右侧芯片新增 · F 退出`;
+  if (dst)
+    return `改单目标 · 已选「${dst}」· 点右侧芯片替换 · F 退出`;
+  return `改单目标 · obj ${labelEditOid} · 点 + 再点芯片新增 · 点描述再点芯片替换 · 垃圾桶删除 · F 退出`;
 }
 
 function syncLabelEditBadge(){
@@ -1013,6 +1031,7 @@ function exitLabelEditMode(){
   labelEditOid = null;
   labelEditPhraseKey = null;
   labelEditDstKey = null;
+  labelEditAddMode = false;
   syncLabelEditBadge();
   renderAll();
   setStatus(curStem || '已退出改描述');
@@ -1023,10 +1042,7 @@ function toggleLabelEditMode(){
     setStatus('请先按 T 退出匹配');
     return;
   }
-  if (phrasePaintMode){
-    setStatus('请先按 F 确认点亮，或 V 退出');
-    return;
-  }
+  if (phrasePaintMode) finishPhrasePaint();
   if (labelEditMode){
     exitLabelEditMode();
     return;
@@ -1040,6 +1056,7 @@ function toggleLabelEditMode(){
   labelEditOid = speechOid;
   labelEditPhraseKey = null;
   labelEditDstKey = null;
+  labelEditAddMode = false;
   showBoxes = true;
   highlightObjId = null;
   highlightPhrase = null;
@@ -1055,6 +1072,7 @@ function pickLabelEditObj(oid){
   if (n == null) return;
   labelEditOid = (labelEditOid === n) ? null : n;
   labelEditDstKey = null;
+  labelEditAddMode = false;
   speechOid = labelEditOid;
   if (labelEditPhraseKey){
     const g = collectLabelGroups().find(x => x.phrases.some(p => p.key === labelEditPhraseKey));
@@ -1077,24 +1095,71 @@ function labelEditSrcBlocked(groupKey, phKey){
   return false;
 }
 
-function pickLabelEditPhrase(key){
-  const k = key ? String(key).toLowerCase() : null;
-  if (k){
-    const g = collectLabelGroups().find(x => x.phrases.some(p => p.key === k));
-    if (!g || labelEditSrcBlocked(g.key, k)) return;
+function pickLabelEditAdd(){
+  if (!labelEditMode || labelEditOid == null) return;
+  labelEditAddMode = !labelEditAddMode;
+  if (labelEditAddMode){
+    labelEditDstKey = null;
+    labelEditPhraseKey = null;
   }
-  labelEditPhraseKey = (k && labelEditPhraseKey === k) ? null : k;
+  syncSpeechPop();
   renderLabelOverview();
   syncLabelEditBadge();
   setStatus(labelEditStatusText());
 }
 
+function applyLabelEditChip(key){
+  if (!labelEditMode) return;
+  if (labelEditOid == null){
+    setStatus('请先点图中目标');
+    return;
+  }
+  const k = key ? String(key).toLowerCase() : null;
+  if (!k) return;
+  const g = collectLabelGroups().find(x => x.phrases.some(p => p.key === k));
+  if (!g || labelEditSrcBlocked(g.key, k)) return;
+  labelEditPhraseKey = k;
+  const replacing = !!labelEditDstKey;
+  const adding = !replacing && labelEditAddMode;
+  labelEditAddMode = false;
+  if (replacing) confirmLabelEditModify();
+  else if (adding) confirmLabelEditAdd();
+  else {
+    setStatus('点漫画框 + 新增，或先点框内描述再点芯片替换');
+    labelEditPhraseKey = null;
+    return;
+  }
+  labelEditPhraseKey = null;
+}
+
 function pickLabelEditDst(key){
   const k = key ? String(key).toLowerCase() : null;
   labelEditDstKey = (k && labelEditDstKey === k) ? null : k;
+  labelEditAddMode = false;
+  labelEditPhraseKey = null;
   syncSpeechPop();
+  renderLabelOverview();
   syncLabelEditBadge();
   setStatus(labelEditStatusText());
+}
+
+function stashPhraseInPool(classKey, phrase, zh){
+  const n = normPhrase(phrase);
+  if (!classKey || !n) return;
+  const key = phraseKey(n);
+  let m = labelPhrasePool.get(classKey);
+  if (!m){
+    m = new Map();
+    labelPhrasePool.set(classKey, m);
+  }
+  const prev = m.get(key);
+  m.set(key, {phrase: n, zh: String(zh || (prev && prev.zh) || '').trim(), key});
+}
+
+function deleteLabelEditPhraseAt(key){
+  if (!labelEditMode || labelEditOid == null) return;
+  labelEditDstKey = key ? String(key).toLowerCase() : null;
+  confirmLabelEditDelete();
 }
 
 function phraseClassKeys(phKey){
@@ -1177,7 +1242,7 @@ function phrasePaintStatusText(){
   const nAdd = [...phrasePaintOn].filter(id => !phrasePaintOrig.has(id)).length;
   const nDel = [...phrasePaintOrig].filter(id => !phrasePaintOn.has(id)).length;
   const pend = (nAdd || nDel) ? ` · 将点亮 ${nAdd} / 点灭 ${nDel}` : '';
-  return `点亮「${ph}」· 已亮 ${nOn}${pend} · 点击目标点亮/点灭 · F 确认 · V 退出`;
+  return `点亮「${ph}」· 已亮 ${nOn}${pend} · 点击目标点亮/点灭 · V 退出即保存`;
 }
 
 function syncPaintBadge(){
@@ -1210,9 +1275,7 @@ function togglePhrasePaintMode(){
     return;
   }
   if (phrasePaintMode){
-    exitPhrasePaintMode();
-    renderAll();
-    setStatus('已退出点亮（未写入）');
+    finishPhrasePaint();
     return;
   }
   if (!item){
@@ -1287,6 +1350,16 @@ function confirmPhrasePaint(){
   else setStatus(`已更新「${ph}」· 点亮 ${toAdd.length} · 点灭 ${toDel.length}`);
 }
 
+/** 退出点亮：写入改动并落盘 */
+function finishPhrasePaint(){
+  confirmPhrasePaint();
+  if (!dirty) return;
+  const msg = (document.getElementById('status') || {}).textContent || '';
+  saveIfDirty().then((ok) => {
+    if (ok && msg) setStatus(msg);
+  });
+}
+
 function currentSpeechOid(){
   if (sideTab !== 'labels' || matchMode || phrasePaintMode) return null;
   if (labelEditMode) return labelEditOid;
@@ -1315,14 +1388,34 @@ function fillSpeechPop(pop, oid){
   const recs = phrasesOfObj(oid);
   const label = sourceLabelPhraseForObj(obj) || (obj && obj.label) || '';
   const dst = labelEditMode ? labelEditDstKey : null;
-  let html = `<div class="speech-hd"><span>obj ${oid}${label ? ' · ' + escHtml(label) : ''}</span><button type="button" class="speech-del" title="删除该目标框（Delete）">删除</button></div>`;
+  const trashSvg = '<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M9 3h6l1 1h4v2H4V4h4l1-1zm1 6h2v8h-2V9zm4 0h2v8h-2V9zM6 7h12v12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V7z"/></svg>';
+  const hdActions = (labelEditMode
+    ? `<button type="button" class="speech-add${labelEditAddMode ? ' on' : ''}" title="从右侧芯片新增描述">+</button>`
+    : '') +
+    `<button type="button" class="speech-del" title="删除该目标框（Delete）">删除</button>`;
+  let html = `<div class="speech-hd"><span>obj ${oid}${label ? ' · ' + escHtml(label) : ''}</span><div class="speech-hd-actions">${hdActions}</div></div>`;
   if (!recs.length) html += '<div class="speech-empty">暂无描述</div>';
   else recs.forEach(r => {
     const on = dst === r.key ? ' on' : '';
     const text = r.zh || r.phrase;
-    html += `<button type="button" class="speech-ph${on}" data-ph="${escHtml(r.key)}" title="${escHtml(r.phrase)}">${escHtml(text)}</button>`;
+    if (labelEditMode){
+      html += `<div class="speech-row">` +
+        `<button type="button" class="speech-ph${on}" data-ph="${escHtml(r.key)}" title="${escHtml(r.phrase)}">${escHtml(text)}</button>` +
+        `<button type="button" class="speech-trash" data-ph="${escHtml(r.key)}" title="删除该描述（回候选池）">${trashSvg}</button>` +
+        `</div>`;
+    } else {
+      html += `<button type="button" class="speech-ph${on}" data-ph="${escHtml(r.key)}" title="${escHtml(r.phrase)}">${escHtml(text)}</button>`;
+    }
   });
   inner.innerHTML = html;
+  const addBtn = inner.querySelector('.speech-add');
+  if (addBtn){
+    addBtn.onclick = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      pickLabelEditAdd();
+    };
+  }
   const delBtn = inner.querySelector('.speech-del');
   if (delBtn){
     delBtn.onclick = (ev) => {
@@ -1331,6 +1424,13 @@ function fillSpeechPop(pop, oid){
       deleteObject(oid, label);
     };
   }
+  inner.querySelectorAll('.speech-trash').forEach(btn => {
+    btn.onclick = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      deleteLabelEditPhraseAt(btn.dataset.ph);
+    };
+  });
   inner.querySelectorAll('.speech-ph').forEach(btn => {
     btn.onclick = (ev) => {
       ev.preventDefault();
@@ -1437,7 +1537,7 @@ function confirmLabelEditAdd(){
   scheduleObjCaptionRefresh(oid);
   renderAll();
   syncLabelEditBadge();
-  setStatus(`已新增 obj ${oid} ← 「${ph}」· 可继续点目标 / 描述，或 G 退出`);
+  setStatus(`已新增 obj ${oid} ← 「${ph}」· 可继续点目标 / 描述，或 F 退出`);
 }
 
 function confirmLabelEditDelete(){
@@ -1459,6 +1559,8 @@ function confirmLabelEditDelete(){
     return;
   }
   const oldPh = normPhrase(desc.phrases[idx]);
+  const oldZh = (desc.zh && desc.zh[idx]) || '';
+  stashPhraseInPool(objClassKey(oid), oldPh, oldZh);
   desc.phrases.splice(idx, 1);
   desc.zh.splice(idx, 1);
   setChosen(oid, getChosen(oid).filter(x => x.toLowerCase() !== k));
@@ -1468,7 +1570,7 @@ function confirmLabelEditDelete(){
   scheduleObjCaptionRefresh(oid);
   renderAll();
   syncLabelEditBadge();
-  setStatus(`已删除 obj ${oid} 的「${oldPh}」· 可继续操作，或 G 退出`);
+  setStatus(`已删除 obj ${oid} 的「${oldPh}」· 已回右侧候选池`);
 }
 
 function confirmLabelEditModify(){
@@ -1482,7 +1584,7 @@ function confirmLabelEditModify(){
     return;
   }
   if (!labelEditPhraseKey){
-    setStatus('请再点右侧窗口要换成的描述，然后按 B');
+    setStatus('请再点右侧芯片替换');
     return;
   }
   const rec = lookupLabelPhrase(labelEditPhraseKey);
@@ -1499,6 +1601,7 @@ function confirmLabelEditModify(){
     return;
   }
   const oldPh = normPhrase(desc.phrases[oldIdx]);
+  const oldZh = (desc.zh && desc.zh[oldIdx]) || '';
   if (oldPh.toLowerCase() === newPh.toLowerCase()){
     setStatus(`obj ${oid} 已是「${newPh}」`);
     return;
@@ -1511,6 +1614,7 @@ function confirmLabelEditModify(){
     desc.phrases[oldIdx] = newPh;
     desc.zh[oldIdx] = rec.zh || desc.zh[oldIdx] || '';
   }
+  stashPhraseInPool(objClassKey(oid), oldPh, oldZh);
   const chosen = getChosen(oid);
   const nextChosen = chosen.map(x => x.toLowerCase() === oldPh.toLowerCase() ? newPh : x);
   const seen = new Set();
@@ -1527,7 +1631,7 @@ function confirmLabelEditModify(){
   scheduleObjCaptionRefresh(oid);
   renderAll();
   syncLabelEditBadge();
-  setStatus(`已修改 obj ${oid}：「${oldPh}」→「${newPh}」· 可继续操作，或 G 退出`);
+  setStatus(`已修改 obj ${oid}：「${oldPh}」→「${newPh}」· 可继续操作，或 F 退出`);
 }
 
 function bindCapPhraseInteractions(){
@@ -2129,10 +2233,7 @@ function setSideTab(tab){
   if (labelList) labelList.style.display = sideTab === 'labels' ? 'flex' : 'none';
   document.getElementById('file-list').style.display = sideTab === 'files' ? 'block' : 'none';
   if (sideTab !== 'labels' && labelEditMode) exitLabelEditMode();
-  if (sideTab !== 'labels' && phrasePaintMode){
-    exitPhrasePaintMode();
-    setStatus('已退出点亮（未写入）');
-  }
+  if (sideTab !== 'labels' && phrasePaintMode) finishPhrasePaint();
   if (sideTab === 'labels') renderLabelOverview();
   else if (sideTab === 'objs') renderObjects();
   drawBoxes();
@@ -3771,15 +3872,12 @@ async function saveIfDirty(){
 
 async function loadStem(stem){
   const seq = ++loadSeq;
+  if (stem !== curStem && matchMode){
+    alert('请先按 T 退出匹配');
+    return;
+  }
+  if (phrasePaintMode) confirmPhrasePaint();
   if (stem !== curStem){
-    if (matchMode){
-      alert('请先按 T 退出匹配');
-      return;
-    }
-    if (phrasePaintMode){
-      alert('请先按 F 确认点亮，或 V 退出');
-      return;
-    }
     if (curStem && item && !confirmLeaveIfSlotsPending()) return;
     // 描述 / caption 刷新均后台继续；切图前刷新快照并重排，避免旧落位盖盘
     const leavingStem = curStem;
@@ -3789,6 +3887,10 @@ async function loadStem(stem){
     if (!ok) return;
     if (seq !== loadSeq) return;
     if (leavingStem && leavingItem) resyncCaptionRefreshAfterSave(leavingStem, leavingItem);
+  } else if (dirty){
+    const ok = await saveIfDirty();
+    if (!ok) return;
+    if (seq !== loadSeq) return;
   }
   abortZhRequests();
   const reusePrefetch = null;
@@ -3800,8 +3902,9 @@ async function loadStem(stem){
   labelEditOid = null;
   labelEditPhraseKey = null;
   labelEditDstKey = null;
+  labelEditAddMode = false;
+  labelPhrasePool = new Map();
   speechOid = null;
-  if (phrasePaintMode) exitPhrasePaintMode();
   descZhToken++;
   setStatus('加载中...');
   item = await api('/api/item/' + encodeURIComponent(stem));
@@ -3848,10 +3951,7 @@ async function loadStem(stem){
 
 async function selectCap(i){
   if (i === activeCap) return;
-  if (phrasePaintMode){
-    setStatus('请先按 F 确认点亮，或 V 退出');
-    return;
-  }
+  if (phrasePaintMode) confirmPhrasePaint();
   const caps = (item && item.captions && item.captions.captions) || [];
   const leaving = caps[activeCap];
   if (leaving && !captionHasSelectedPhrases(leaving) && (leaving.caption || '').trim()){
@@ -4457,11 +4557,13 @@ function renderLabelOverview(){
             if (!editClass) tip = '请先点图中目标';
             else if (otherClass) tip = `其它类别，不可选（当前是 ${editClass}）`;
             else if (dupOnObj) tip = '当前目标已有这条描述';
-            else tip = `${p.phrase} · 选为要写入的描述，再按 B 替换或 F 新增`;
+            else if (labelEditDstKey) tip = `${p.phrase} · 替换对话框中的描述`;
+            else if (labelEditAddMode) tip = `${p.phrase} · 新增到 obj ${labelEditOid}`;
+            else tip = `${p.phrase} · 先点漫画框 + 新增，或先点框内描述再替换`;
           } else if (phrasePaintMode){
             if (otherClass) tip = '其它类别，不可选';
-            else if (p.key === phrasePaintKey) tip = '当前点亮的描述 · 在图中点目标点亮/点灭，F 确认';
-            else tip = '点亮模式下请先 F 确认或 V 退出';
+            else if (p.key === phrasePaintKey) tip = '当前点亮的描述 · 在图中点目标点亮/点灭，再按 V 退出即保存';
+            else tip = '点亮模式下请先按 V 退出（退出即保存）';
           }
           return `<button type="button" class="label-ph${cls}" data-ph="${escHtml(p.key)}" ${blocked ? 'disabled' : ''} title="${escHtml(tip)}">${escHtml(text)}</button>`;
     };
@@ -4517,7 +4619,7 @@ function renderLabelOverview(){
         ev.stopPropagation();
         if (chip.disabled || chip.classList.contains('muted')) return;
         if (phrasePaintMode) return;
-        if (labelEditMode) pickLabelEditPhrase(chip.dataset.ph);
+        if (labelEditMode) applyLabelEditChip(chip.dataset.ph);
         else setHighlightPhrase(chip.dataset.ph);
       };
     });
@@ -4794,6 +4896,7 @@ async function deleteObject(oid, label){
   if (labelEditOid === oid){
     labelEditOid = null;
     labelEditDstKey = null;
+    labelEditAddMode = false;
   }
   if (phrasePaintOn && phrasePaintOn.delete) phrasePaintOn.delete(oid);
   if (phrasePaintOrig && phrasePaintOrig.delete) phrasePaintOrig.delete(oid);
@@ -5127,10 +5230,7 @@ function defaultCapHint(){
   if (phrasePaintMode) return phrasePaintStatusText();
   if (labelEditMode) return labelEditStatusText();
   if (matchMode) return matchStatusText();
-  const caps = (item && item.captions && item.captions.captions) || [];
-  const extra = sideTab === 'labels' ? ' · 点目标看对话框 · Delete 删目标 · G 改描述 · 点描述后 V 点亮' : '';
-  if (!caps.length) return `A/D 切图 · W/S 切 caption · T 匹配上一张 · Q 全图 · E 跟目标 · R 框显隐${extra} · 切图/切 caption 自动保存`;
-  return `captions${activeCap + 1}/${caps.length} · A/D 切图 · W/S 切 caption · T 匹配 · R 框显隐${extra} · 自动保存已开`;
+  return 'W/S 切 caption · T 前图匹配 · R 框显隐 · F 改单目标 · V 批量改目标';
 }
 
 function applyMatchDescriptions(prevOid, currOid){
@@ -5345,7 +5445,7 @@ async function toggleMatchMode(){
     return;
   }
   if (labelEditMode) exitLabelEditMode();
-  if (phrasePaintMode) exitPhrasePaintMode();
+  if (phrasePaintMode) finishPhrasePaint();
   if (!item || !curStem){
     alert('请先打开一张图像');
     return;
@@ -5593,29 +5693,29 @@ function initViewerControls(){
     if (tag === 'textarea' || tag === 'input' || (e.target && e.target.isContentEditable)) return;
     if (e.key === 't' || e.key === 'T'){
       e.preventDefault();
-      if (phrasePaintMode){ setStatus('请先按 F 确认点亮，或 V 退出'); return; }
+      if (phrasePaintMode) finishPhrasePaint();
       toggleMatchMode();
     }
     else if (e.key === 'a' || e.key === 'A'){
       e.preventDefault();
       if (matchMode){ setStatus('请先按 T 退出匹配'); return; }
-      if (phrasePaintMode){ setStatus('请先按 F 确认点亮，或 V 退出'); return; }
+      if (phrasePaintMode) confirmPhrasePaint();
       navImage(-1);
     }
     else if (e.key === 'd' || e.key === 'D'){
       e.preventDefault();
       if (matchMode){ setStatus('请先按 T 退出匹配'); return; }
-      if (phrasePaintMode){ setStatus('请先按 F 确认点亮，或 V 退出'); return; }
+      if (phrasePaintMode) confirmPhrasePaint();
       navImage(1);
     }
     else if (e.key === 'w' || e.key === 'W'){
       e.preventDefault();
-      if (phrasePaintMode){ setStatus('请先按 F 确认点亮，或 V 退出'); return; }
+      if (phrasePaintMode) confirmPhrasePaint();
       navCaption(-1);
     }
     else if (e.key === 's' || e.key === 'S'){
       e.preventDefault();
-      if (phrasePaintMode){ setStatus('请先按 F 确认点亮，或 V 退出'); return; }
+      if (phrasePaintMode) confirmPhrasePaint();
       navCaption(1);
     }
     else if (e.key === 'q' || e.key === 'Q'){ e.preventDefault(); setFitMode('full'); }
@@ -5625,22 +5725,8 @@ function initViewerControls(){
       e.preventDefault();
       togglePhrasePaintMode();
     }
-    else if (e.key === 'g' || e.key === 'G'){
-      e.preventDefault();
-      toggleLabelEditMode();
-    }
-    else if (e.key === 'b' || e.key === 'B'){
-      if (!labelEditMode) return;
-      e.preventDefault();
-      confirmLabelEditModify();
-    }
     else if (e.key === 'Delete'){
       if (matchMode || phrasePaintMode) return;
-      if (labelEditMode && labelEditDstKey){
-        e.preventDefault();
-        confirmLabelEditDelete();
-        return;
-      }
       if (sideTab === 'labels' || labelEditMode){
         const oid = currentSpeechOid();
         if (oid == null){
@@ -5659,21 +5745,20 @@ function initViewerControls(){
     }
     else if (e.key === 'f' || e.key === 'F'){
       e.preventDefault();
-      if (phrasePaintMode) confirmPhrasePaint();
-      else if (labelEditMode) confirmLabelEditAdd();
+      if (phrasePaintMode) finishPhrasePaint();
       else if (matchMode) confirmMatchPair();
+      else toggleLabelEditMode();
     }
     else if (e.key === 'Escape'){
       if (phrasePaintMode){
         e.preventDefault();
-        exitPhrasePaintMode();
-        renderAll();
-        setStatus('已退出点亮（未写入）');
+        finishPhrasePaint();
         return;
       }
       if (labelEditMode){
         e.preventDefault();
         if (labelEditDstKey) labelEditDstKey = null;
+        else if (labelEditAddMode) labelEditAddMode = false;
         else if (labelEditPhraseKey) labelEditPhraseKey = null;
         else if (labelEditOid != null){
           labelEditOid = null;
