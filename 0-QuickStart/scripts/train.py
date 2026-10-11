@@ -29,8 +29,9 @@ import sys
 import yaml
 from pathlib import Path
 
-# 将 qwen-vl-finetune 加入模块搜索路径
-finetune_root = Path(__file__).parent / "Qwen" / "qwen-vl-finetune"
+# 仓库根目录：0-QuickStart/scripts/train.py → 上三级
+repo_root = Path(__file__).resolve().parent.parent.parent
+finetune_root = repo_root / "Qwen" / "qwen-vl-finetune"
 sys.path.insert(0, str(finetune_root))
 
 from qwenvl.train.trainer import replace_qwen2_vl_attention_class

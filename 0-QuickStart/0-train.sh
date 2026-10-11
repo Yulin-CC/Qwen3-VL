@@ -36,13 +36,14 @@ nproc=$(echo "$device" | tr ',' '\n' | wc -l)
 #---------------#
 # 执行训练
 #---------------#
+# 切到仓库根目录，保证 weights/ data/ config/ 等相对路径仍可用
 cd "$(dirname $0)/.."
 output="./runs/0-train/$project"
 CUDA_VISIBLE_DEVICES=$device                      \
 torchrun --nproc_per_node=${nproc}                \
          --master_addr=${MASTER_ADDR:-127.0.0.1}  \
          --master_port=${MASTER_PORT:-29500}      \
-         train.py                                 \
+         0-QuickStart/scripts/train.py            \
          --config ${config}                       \
          --model_name_or_path ${weight}           \
          --dataset_use ${datasets}                \

@@ -28,8 +28,9 @@ conda activate qwen                            # 换到 qwen 虚拟环境 (实�
 #---------------#
 # 执行推理
 #---------------#
+# 切到仓库根目录，保证 weights/ 等相对路径仍可用
 cd "$(dirname $0)/.."
-python inference.py --device $device                    \
+python 0-QuickStart/scripts/inference.py --device $device \
                     --weight $weight                    \
                     --filepath $filepath                \
                     --description $description          \

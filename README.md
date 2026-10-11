@@ -8,9 +8,12 @@
 
 ```
 Qwen3-VL/
-├── 0-QuickStart/                 # 训练 / 推理入口脚本
+├── 0-QuickStart/                 # 训练 / 推理入口
 │   ├── 0-train.sh
-│   └── 1-inference.sh
+│   ├── 1-inference.sh
+│   └── scripts/
+│       ├── train.py              # 训练入口
+│       └── inference.py          # 推理入口
 ├── 1-annotation-tool/            # 标注工具
 │   ├── qwen/                     # 图像问答对标注（Flask）
 │   └── grounding/                # Grounding 描述生成与检验
@@ -18,8 +21,6 @@ Qwen3-VL/
 ├── Qwen/                         # 上游官方代码（finetune / utils / eval）
 ├── config/default.yaml           # 微调默认配置
 ├── data/                         # 数据集清单与生成脚本
-├── train.py                      # 训练入口
-├── inference.py                  # 推理入口
 └── z-others/                     # 官方 README、依赖、Demo 等归档
     ├── requirements.txt
     └── README.md                 # 上游原始说明
