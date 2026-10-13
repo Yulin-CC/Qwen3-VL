@@ -30,7 +30,9 @@ allowed_media_path="/home"                             # 允许加载本地图�
 # 切换到虚拟环境
 #---------------#
 source /home/ubuntu/miniconda3/etc/profile.d/conda.sh   # 虚拟环境切换实例化
-conda activate qwen                                     # 换到 qwen 虚拟环境
+conda activate vllm                                     # 换到 vllm 虚拟环境
+# conda gcc13 编出来的 flashinfer 需要比系统更新的 libstdc++
+export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 #---------------------------------------------------------------------------------------------------------#
 
 #---------------#

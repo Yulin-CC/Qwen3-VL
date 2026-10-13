@@ -30,7 +30,7 @@ allowed_media_path="/home"                             # 允许加载本地图�
 # 切换到虚拟环境
 #---------------#
 source /home/ubuntu/miniconda3/etc/profile.d/conda.sh   # 虚拟环境切换实例化
-conda activate qwen                                     # 换到 qwen 虚拟环境
+conda activate vllm                                     # 换到 vllm 虚拟环境
 #---------------------------------------------------------------------------------------------------------#
 
 #---------------#
