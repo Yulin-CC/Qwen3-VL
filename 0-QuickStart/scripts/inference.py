@@ -1,125 +1,107 @@
 """
-Qwen3-VL 图像推理脚本
-支持单文件、文件夹、图像和视频推理
+# @Author: AI产品研发组
+# @Date: 2026-09-12
+# @Description: Qwen3-VL 推理入口，预处理走官方 qwen-vl-utils
+# @Command: bash 0-QuickStart/1-inference.sh
 """
 
-from ntpath import isfile
-import os
-from PIL import Image
+import sys
+from argparse import ArgumentParser
+from pathlib import Path
+
+import yaml
 from transformers import AutoModelForImageTextToText, AutoProcessor
 
-# 常见文件后缀
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
-VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv"}
+QS_DIR = Path(__file__).resolve().parents[1]
+ROOT_DIR = QS_DIR.parent
+sys.path.insert(0, str(QS_DIR))
 
-def build_messages(description, file_path):
-    #--------------------------#
-    # 检查图像路径：单文件 or 目录
-    #--------------------------#
-    if os.path.isfile(file_path) and os.path.splitext(file_path)[1].lower() in IMAGE_EXTENSIONS:
-        message_mode = "single_image"
-    elif os.path.isfile(file_path) and os.path.splitext(file_path)[1].lower() in VIDEO_EXTENSIONS:
-        message_mode = "single_video"
-    elif os.path.isdir(file_path):
-        message_mode = "multiple_images"
-    else:
-        raise ValueError(f"❌ 图像路径不合法: {file_path}")
-
-    # 单图
-    if message_mode == "single_image":
-        content = [
-            {"type": "image", "image": file_path},
-            {"type": "text", "text": description},
-        ]
-    elif message_mode == "single_video":
-        content = [
-            {"type": "video", "video": file_path},
-            {"type": "text", "text": description},
-        ]
-    else:
-        # 多图：目录下按文件名排序的图片依次加入
-        files = [
-            f for f in os.listdir(file_path)
-            if os.path.splitext(f)[1].lower() in IMAGE_EXTENSIONS
-        ]
-        files.sort()
-        if not files:
-            raise ValueError(f"❌ 目录下没有图片文件: {file_path}")
-        content = []
-        for f in files:
-            full_path = os.path.join(file_path, f)
-            content.append({"type": "image", "image": full_path})
-        content.append({"type": "text", "text": description})
-
-    # 创建输入信息
-    messages = [{"role": "user", "content": content}]
-
-    return messages
+from utils.inference_utils import build_messages, generate_reply, prepare_inputs, save_result
 
 
-def inference(weight, file_path, description, device="auto"):
-
-    #-------------#
-    # 加载模型 
-    #-------------#
-    print(f"🟡 正在加载模型: {weight}")
-    device_map = f"cuda:{device}" if str(device).isdigit() else device
-    model = AutoModelForImageTextToText.from_pretrained(weight, dtype="auto", device_map=device_map, trust_remote_code=True)
-    processor = AutoProcessor.from_pretrained(weight, trust_remote_code=True)
-    print("✅ 模型加载完成！\n")
-
-    #-------------#
-    # 输入信息 
-    #-------------#
-    messages = build_messages(description, file_path)
-    print(f"⛺ 图像路径: {file_path}")
-    print(f"🔍 问题: {messages[0]['content'][-1]['text']}\n")
-
-    #-------------#
-    # 加载信息
-    #-------------#
-    inputs = processor.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, return_dict=True, return_tensors="pt")
-    inputs = inputs.to(model.device)
-
-    # 生成回复
-    print("正在生成回复...")
-    generated_ids = model.generate(**inputs, max_new_tokens=256)
-    generated_ids_trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
-    output_text = processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)
-
-    print(f"✨ 回答: {output_text[0]}")
+#-------------#
+# 读取 yaml
+#-------------#
+def load_predict_defaults(config_path):
+    if not config_path:
+        return {}
+    path = Path(config_path)
+    if not path.is_absolute():
+        path = ROOT_DIR / path
+    if not path.is_file():
+        return {}
+    with open(path, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+    predict = cfg.get("predict")
+    return predict if isinstance(predict, dict) else {}
 
 
-
-from argparse import ArgumentParser
+#-------------#
+# 参数
+#-------------#
 def parse_args():
+    pre = ArgumentParser(add_help=False)
+    pre.add_argument("--config", type=str, default="config/default.yaml")
+    pre_args, _ = pre.parse_known_args()
+    defaults = load_predict_defaults(pre_args.config)
 
-    parser = ArgumentParser(description='MMDetection Unified Inference (Image/Video)')
-
-    parser.add_argument('--device', type=str, default='1', help='GPU device to use')
-    parser.add_argument('--weight', type=str, default='weights/Qwen3-VL-4B-Instruct', help='Model weight path')
-    parser.add_argument('--filepath', type=str, default='', help='File/folder path')
-    parser.add_argument('--description', type=str, default='请描述这张图片', help='Question')
-
+    parser = ArgumentParser(description="Qwen3-VL Inference (Image/Video)")
+    parser.add_argument("--config", type=str, default="config/default.yaml")
+    parser.add_argument("--device", type=str, default="0")
+    parser.add_argument("--weight", type=str, default="weights/Qwen3-VL-4B-Instruct")
+    parser.add_argument("--filepath", type=str, default="")
+    parser.add_argument("--description", type=str, default="请描述这张图片")
+    parser.add_argument("--output", type=str, default="")
+    parser.add_argument("--image_patch_size", type=int, default=defaults.get("image_patch_size", 16))
+    parser.add_argument("--min_pixels", type=int, default=defaults.get("min_pixels", 784))
+    parser.add_argument("--max_pixels", type=int, default=defaults.get("max_pixels", 50176))
+    parser.add_argument("--max_new_tokens", type=int, default=defaults.get("max_new_tokens", 256))
+    parser.add_argument("--video_fps", type=float, default=defaults.get("video_fps", 2.0))
+    parser.add_argument(
+        "--return_video_metadata",
+        type=lambda x: str(x).lower() not in ("0", "false", "no"),
+        default=defaults.get("return_video_metadata", True),
+    )
     return parser.parse_args()
 
+
+#-------------#
+# 推理
+#-------------#
+def inference(args):
+    #-------------#
+    # 加载模型
+    #-------------#
+    print(f"正在加载模型: {args.weight}")
+    device_map = f"cuda:{args.device}" if str(args.device).isdigit() else args.device
+    model = AutoModelForImageTextToText.from_pretrained(
+        args.weight, dtype="auto", device_map=device_map, trust_remote_code=True
+    )
+    processor = AutoProcessor.from_pretrained(args.weight, trust_remote_code=True)
+    print("模型加载完成\n")
+
+    #-------------#
+    # 官方预处理
+    #-------------#
+    messages = build_messages(
+        args.description, args.filepath, args.min_pixels, args.max_pixels, args.video_fps
+    )
+    print(f"输入路径: {args.filepath}")
+    print(f"问题: {args.description}\n")
+    inputs = prepare_inputs(
+        processor, messages, args.image_patch_size, args.return_video_metadata
+    )
+
+    #-------------#
+    # 生成
+    #-------------#
+    print("正在生成回复...")
+    answer = generate_reply(model, processor, inputs, args.max_new_tokens)
+    print(f"回答: {answer}")
+    dest = save_result(args.output, args.filepath, args.description, answer)
+    if dest:
+        print(f"已写入: {dest}")
+
+
 if __name__ == "__main__":
-
-    args = parse_args()
-
-    #------------#
-    # 配置参数
-    #----------------------------#
-    device = args.device         # GPU 编号，或 "auto"、"cpu"
-    #----------------------------#
-    weight_path = args.weight    # 模型路径
-    file_path = args.filepath    # 文件/文件夹路径
-    #----------------------------#
-    # 问题
-    #----------------------------#
-    description = args.description
-    #-----------------------------#
-
-    # 图像推理
-    inference(weight_path, file_path, description, device)
-
+    inference(parse_args())

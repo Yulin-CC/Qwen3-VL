@@ -29,9 +29,9 @@ import sys
 import yaml
 from pathlib import Path
 
-# 仓库根目录：0-QuickStart/scripts/train.py → 上三级
-repo_root = Path(__file__).resolve().parent.parent.parent
-finetune_root = repo_root / "Qwen" / "qwen-vl-finetune"
+# 仓库根目录：0-QuickStart/scripts/train.py → parents[2]
+ROOT_DIR = Path(__file__).resolve().parents[2]
+finetune_root = ROOT_DIR / "Qwen" / "qwen-vl-finetune"
 sys.path.insert(0, str(finetune_root))
 
 from qwenvl.train.trainer import replace_qwen2_vl_attention_class
@@ -247,11 +247,36 @@ def train(model_args, data_args, training_args, attn_implementation="flash_atten
     processor.save_pretrained(training_args.output_dir)  # 保存图像预处理配置，推理时需要
 
 
+# HfArgumentParser 不认识的项：只给 from_pretrained 用
+_EXTRA_KEYS = {"attn_implementation"}
+_yaml_extras = {}
+
+
+def _pop_named_arg(name):
+    """从 sys.argv 取出 --name / --name=，避免 HfArgumentParser 报未知参数。"""
+    argv = sys.argv[1:]
+    value = None
+    drop = set()
+    for i, arg in enumerate(argv):
+        if arg == f"--{name}" and i + 1 < len(argv):
+            value = argv[i + 1]
+            drop.update((i, i + 1))
+            break
+        if arg.startswith(f"--{name}="):
+            value = arg.split("=", 1)[1]
+            drop.add(i)
+            break
+    if drop:
+        sys.argv = sys.argv[:1] + [a for i, a in enumerate(argv) if i not in drop]
+    return value
+
+
 def _inject_yaml_defaults():
     """读取 --config yaml 文件，将其中的参数作为默认值注入 sys.argv。
     命令行中已显式指定的同名参数不会被覆盖（命令行优先级更高）。
     --config 本身会在注入完成后从 sys.argv 中移除，避免 HfArgumentParser 报错。
     """
+    global _yaml_extras
     argv = sys.argv[1:]
 
     #--------------------------#
@@ -272,10 +297,14 @@ def _inject_yaml_defaults():
     if config_path is None:
         return  # 未传 --config，不做任何处理
 
+    config_file = Path(config_path)
+    if not config_file.is_absolute():
+        config_file = ROOT_DIR / config_path
+
     #--------------------------#
     # 加载 yaml 默认值
     #--------------------------#
-    with open(config_path, "r", encoding="utf-8") as f:
+    with open(config_file, "r", encoding="utf-8") as f:
         defaults = yaml.safe_load(f) or {}
 
     # 从 argv 中移除 --config 及其路径（HfArgumentParser 不认识这个参数）
@@ -290,6 +319,14 @@ def _inject_yaml_defaults():
     #--------------------------#
     extra = []
     for key, val in defaults.items():
+        if val is None or val == "":
+            continue
+        if isinstance(val, dict):
+            continue  # predict / train 等命名空间，不注入训练 CLI
+        if key in _EXTRA_KEYS:
+            if key not in cli_keys:
+                _yaml_extras[key] = val
+            continue
         if key in cli_keys:
             continue  # 命令行已指定，跳过
         if isinstance(val, bool):
@@ -300,15 +337,29 @@ def _inject_yaml_defaults():
     sys.argv = sys.argv[:1] + extra + clean_argv
 
 
+def _resolve_deepspeed(training_args):
+    """相对路径按仓库根解析，与官方 scripts/zero*.json 对齐。"""
+    ds = getattr(training_args, "deepspeed", None)
+    if not ds:
+        return
+    ds_path = Path(ds)
+    if not ds_path.is_absolute():
+        training_args.deepspeed = str(ROOT_DIR / ds_path)
+
+
 def parse_args():
     """注入 yaml 默认值后，再用 HfArgumentParser 解析命令行参数。"""
     _inject_yaml_defaults()
+    attn_cli = _pop_named_arg("attn_implementation")
+    attn_implementation = attn_cli or _yaml_extras.get("attn_implementation") or "flash_attention_2"
     parser = transformers.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
-    return parser.parse_args_into_dataclasses()
+    model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+    _resolve_deepspeed(training_args)
+    return model_args, data_args, training_args, attn_implementation
 
 
 if __name__ == "__main__":
-    model_args, data_args, training_args = parse_args()
-    # train(model_args, data_args, training_args)
-    # flash_attention_2 需要 glibc>=2.32，系统不满足时改用 sdpa（PyTorch 内置，无额外依赖）
-    train(model_args, data_args, training_args, attn_implementation="sdpa")
+    model_args, data_args, training_args, attn_implementation = parse_args()
+    if training_args.local_rank in (-1, 0):
+        print(f"attn_implementation={attn_implementation} deepspeed={training_args.deepspeed}")
+    train(model_args, data_args, training_args, attn_implementation=attn_implementation)
